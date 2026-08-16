@@ -315,6 +315,32 @@ def test_probe_protocol_layout_is_one_two_region_crc_and_faci_stream():
   )
 
 
+@pytest.mark.parametrize(
+  ("slot", "value", "register"),
+  ((28, -1, "REG88"), (29, 0x10000, "REG20")),
+)
+def test_probe_rejects_configured_values_outside_declared_width(
+  probe_case, slot, value, register,
+):
+  from eps_patch.probe import ProbeError, run_probe
+
+  layout, target, payload, identity, result = probe_case
+  changed = result.faci_values[:slot] + (value,) + result.faci_values[slot + 1:]
+  transport = FakeTransport(identity, replace(result, faci_values=changed))
+
+  with pytest.raises(ProbeError, match=rf"{register}.*width"):
+    run_probe(
+      layout=layout,
+      payload=payload,
+      preflight=lambda: None,
+      transport_factory=lambda: transport,
+      target=target,
+      new_uds=False,
+    )
+
+  assert not layout.probe_directory.exists()
+
+
 def test_stream_collector_decodes_the_comprehensive_probe_as_one_execution(probe_case):
   from eps_patch.protocol import FrameType, PROTOCOL_VERSION, StreamCollector
 

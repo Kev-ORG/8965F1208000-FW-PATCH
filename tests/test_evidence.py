@@ -214,6 +214,21 @@ def test_semantic_loader_rejects_non_pass_or_mismatched_evidence(valid_probe, mu
     load_probe_pass(layout, target)
 
 
+@pytest.mark.parametrize(
+  ("register", "value"),
+  (("REG88", -1), ("REG20", 0x10000)),
+)
+def test_semantic_loader_rejects_configured_values_outside_declared_width(
+  valid_probe, register, value,
+):
+  layout, target, target_sector, crc_sector, report, metadata = valid_probe
+  report["snapshots"]["CONFIGURED"][register] = value
+  write_probe(layout, target_sector, crc_sector, report, metadata)
+
+  with pytest.raises(EvidenceError, match=rf"{register}.*width"):
+    load_probe_pass(layout, target)
+
+
 @pytest.mark.parametrize("kind", ("missing", "malformed", "wrong-backup-size"))
 def test_semantic_loader_rejects_unreadable_or_incomplete_evidence(valid_probe, kind):
   layout, target, target_sector, crc_sector, report, metadata = valid_probe

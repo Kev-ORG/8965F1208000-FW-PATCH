@@ -35,6 +35,7 @@ class TrustedProbeEvidence:
 
 _SNAPSHOT_NAMES = ("PRE", "UNLOCKED", "WINDOWS", "CONFIGURED", "RESTORED")
 _REGISTER_NAMES = tuple(name for name, _address, _width in FACI_DIAGNOSTICS)
+_REGISTER_WIDTHS = tuple(width for _name, _address, width in FACI_DIAGNOSTICS)
 _PRE = (0x80, 0x8000, 0, 0, 0, 0, 0, 0)
 _EXPECTED_SNAPSHOTS = {
   "PRE": _PRE,
@@ -219,9 +220,13 @@ def _validate_snapshots(value: object) -> None:
     snapshot = _require_object(snapshots[checkpoint], f"{checkpoint} FACI snapshot")
     _require_exact_keys(snapshot, set(_REGISTER_NAMES), f"{checkpoint} FACI snapshot")
     expected = _EXPECTED_SNAPSHOTS[checkpoint]
-    for name, wanted in zip(_REGISTER_NAMES, expected):
+    for name, width, wanted in zip(_REGISTER_NAMES, _REGISTER_WIDTHS, expected):
       if type(snapshot[name]) is not int:
         raise EvidenceError(f"{checkpoint} FACI snapshot has an unexpected {name} value")
+      if not 0 <= snapshot[name] < (1 << (width * 8)):
+        raise EvidenceError(
+          f"{checkpoint} {name} exceeds its declared diagnostic width"
+        )
       if checkpoint == "CONFIGURED" and name == "REG20":
         continue
       if checkpoint == "CONFIGURED" and name == "REG88":

@@ -62,6 +62,7 @@ Preflight = Callable[[], object]
 
 _CHECKPOINTS = ("PRE", "UNLOCKED", "WINDOWS", "CONFIGURED", "RESTORED")
 _REGISTERS = tuple(name for name, _address, _width in FACI_DIAGNOSTICS)
+_REGISTER_WIDTHS = tuple(width for _name, _address, width in FACI_DIAGNOSTICS)
 _PRE = (0x80, 0x8000, 0, 0, 0, 0, 0, 0)
 _EXPECTED_SNAPSHOTS = (
   _PRE,
@@ -222,8 +223,13 @@ def _validate_diagnostics(values: object) -> dict[str, dict[str, int]]:
   ):
     start = checkpoint_index * len(_REGISTERS)
     raw = values[start:start + len(_REGISTERS)]
-    if any(type(value) is not int for value in raw):
-      raise ProbeError(f"probe {checkpoint} FACI diagnostic has a non-integer value")
+    for name, width, value in zip(_REGISTERS, _REGISTER_WIDTHS, raw):
+      if type(value) is not int:
+        raise ProbeError(f"probe {checkpoint} FACI diagnostic has a non-integer value")
+      if not 0 <= value < (1 << (width * 8)):
+        raise ProbeError(
+          f"probe {checkpoint} {name} exceeds its declared diagnostic width"
+        )
     if checkpoint == "CONFIGURED":
       # FREQR is write-triggered but reads back as zero on the reviewed EPS.
       required_indices = (0, 1, 2, 3, 6, 7)
