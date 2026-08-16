@@ -73,13 +73,18 @@ def test_repository_contains_no_local_or_rebuildable_outputs():
   assert not [path for path in ROOT.rglob("*") if path.name in forbidden]
   forbidden_suffixes = {".o", ".elf", ".map", ".disassembly", ".symbols", ".sections", ".preprocessed"}
   assert not [path for path in (ROOT / "payload").rglob("*") if path.suffix in forbidden_suffixes]
+
+def test_reviewed_primitive_package_is_importable():
+  from eps_patch import TARGET
+  assert TARGET.part_number == b"8965B4512000"
 ```
 
 - [ ] **Step 2: Run the skeleton test and verify it fails**
 
 Run: `python3.12 -m pytest tests/test_repository_hygiene.py -v`
 
-Expected: FAIL because the package and migrated clean tree do not exist yet.
+Expected: FAIL with `ModuleNotFoundError: No module named 'eps_patch'`; the
+hygiene assertion may already pass in the clean empty repository.
 
 - [ ] **Step 3: Migrate the primitive modules and baseline tests**
 
