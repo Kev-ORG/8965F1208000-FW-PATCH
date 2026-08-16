@@ -2,6 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD = ROOT / "payload"
@@ -50,3 +52,20 @@ def test_probe_binary_contains_entrypoint_and_exact_original_context():
   binary = (BUILD / "probe_pe_cycle.bin").read_bytes()
   assert binary[:4] != bytes(4)
   assert bytes.fromhex("20 e6 31 00") in binary
+
+
+def test_retained_binary_loader_accepts_and_validates_entrypoint(tmp_path: Path):
+  require_cross_build()
+  from eps_patch.payload import PayloadError, load_built_shellcode
+
+  binary = (BUILD / "probe_pe_cycle.bin").read_bytes()
+  manifest = json.loads((BUILD / "manifest.json").read_text(encoding="utf-8"))
+  (tmp_path / "probe_pe_cycle.bin").write_bytes(binary)
+  (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+  assert load_built_shellcode(tmp_path, "probe_pe_cycle") == binary
+
+  manifest["payloads"]["probe_pe_cycle"]["entrypoint"] = "0xfebf0002"
+  (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+  with pytest.raises(PayloadError, match="entrypoint"):
+    load_built_shellcode(tmp_path, "probe_pe_cycle")

@@ -11,7 +11,8 @@ from eps_patch.evidence import load_probe_pass
 from eps_patch.manifest import TARGET
 from eps_patch.paths import ArtifactLayout
 from eps_patch.protocol import (
-  CrcObservation,
+  DCRA_RECORDS,
+  DcraObservation,
   FACI_PE_CYCLE_DIAGNOSTICS,
   OP_FACI_PE_CYCLE,
   RegionResult,
@@ -23,8 +24,11 @@ from eps_patch.transport import EcuIdentity
 IDLE = (0x80, 0x8000, 0, 0, 0, 0, 0, 0)
 UNLOCKED = IDLE[:3] + (1,) + IDLE[4:]
 WINDOWS = UNLOCKED[:6] + (1, 1)
-CONFIGURED = UNLOCKED[:4] + (1, 0x3B00, 1, 1)
+CONFIGURED = UNLOCKED[:4] + (1, 0, 1, 1)
 FACI_VALUES = IDLE + UNLOCKED + WINDOWS + CONFIGURED + IDLE
+REVIEWED_PROBE_ENVELOPE_SHA256 = (
+  "a8b4bddce38bfbea34df4088b8827c8c5bd46bad4ab9fe4f764bba157a5338cc"
+)
 
 
 class FakeTransport:
@@ -62,44 +66,48 @@ def _sectors():
   target_sector = bytearray((index * 17 + 3) & 0xFF for index in range(TARGET.sector_length))
   target_sector[TARGET.instruction_offset:TARGET.instruction_offset + 4] = TARGET.original_instruction
   crc_sector = bytearray((index * 29 + 7) & 0xFF for index in range(TARGET.sector_length))
+  crc_sector[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = (
+    TARGET.crc_original_adjust_word.to_bytes(4, "little")
+  )
   magic_offset = TARGET.magic_addresses[1] - TARGET.crc_sector_base
   crc_sector[magic_offset:magic_offset + 4] = TARGET.magic_word.to_bytes(4, "little")
   return bytes(target_sector), bytes(crc_sector)
 
 
-def _observation(target_sector: bytes, crc_sector: bytes) -> CrcObservation:
+def _observation(target_sector: bytes, crc_sector: bytes) -> DcraObservation:
   old_adjustment = int.from_bytes(
     crc_sector[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4], "little",
   )
-  patched_prefix = 0x12345678
-  return CrcObservation(
+  return DcraObservation(
     entry_ctl=0x10203040,
     entry_cout=0x50607080,
     range_start=TARGET.crc_range_start,
     range_end=TARGET.crc_range_end,
     adjust_address=TARGET.crc_adjust_address,
     old_adjust_word=old_adjustment,
-    patched_prefix_sw=patched_prefix,
-    new_adjust_word=patched_prefix ^ 0xFFFFFFFF,
-    original_sw_full=0xFFFFFFFF,
-    patched_sw_full=0xFFFFFFFF,
-    original_dcra_raw=0xFFFFFFFF,
-    patched_dcra_raw=0xFFFFFFFF,
+    new_adjust_word=TARGET.crc_patched_adjust_word,
+    original_dcra_raw=TARGET.crc_residue,
+    patched_dcra_raw=TARGET.crc_residue,
     exit_ctl=0x10203040,
     exit_cout=0x50607080,
-    sram_echo_length=TARGET.sector_length,
-    sram_echo_crc32=binascii.crc32(target_sector),
   )
+
+
+def _replace_dcra(result: StreamResult, **changes) -> StreamResult:
+  observation = replace(result.dcra, **changes)
+  values = tuple(getattr(observation, name.lower()) for name in DCRA_RECORDS)
+  return replace(result, dcra=observation, dcra_values=values)
 
 
 @pytest.fixture
 def probe_case(tmp_path: Path):
   from eps_patch.probe import PayloadImage
+  from eps_patch.payload import build_envelope, load_built_shellcode
 
   target_sector, crc_sector = _sectors()
   target = replace(TARGET, original_sha256=hashlib.sha256(target_sector).hexdigest())
   observation = _observation(target_sector, crc_sector)
-  values = tuple(getattr(observation, name) for name in observation.__dataclass_fields__)
+  values = tuple(getattr(observation, name.lower()) for name in DCRA_RECORDS)
   result = StreamResult(
     operation=OP_FACI_PE_CYCLE,
     sector=None,
@@ -110,10 +118,15 @@ def probe_case(tmp_path: Path):
       RegionResult(target.sector_base, target_sector),
       RegionResult(target.crc_sector_base, crc_sector),
     ),
-    crc_values=values,
-    crc=observation,
+    dcra_values=values,
+    dcra=observation,
   )
-  envelope = bytes(target.envelope_length)
+  build = Path(__file__).resolve().parents[1] / "payload" / "build"
+  shellcode = load_built_shellcode(build, "probe_pe_cycle")
+  envelope = build_envelope(
+    shellcode, did_201=bytes(16), did_202=bytes(16), iv=bytes(16),
+  )
+  assert hashlib.sha256(envelope).hexdigest() == REVIEWED_PROBE_ENVELOPE_SHA256
   payload = PayloadImage(
     name="probe_pe_cycle",
     envelope=envelope,
@@ -143,7 +156,46 @@ def test_probe_runs_one_payload_and_atomically_installs_complete_pass(probe_case
   assert evidence.target_sector == result.regions[0].data
   assert evidence.crc_sector == result.regions[1].data
   assert evidence.report["result"] == "PASS"
-  assert evidence.report["crc"]["original_dcra_raw"] == 0xFFFFFFFF
+  assert evidence.report["payload"] == {
+    "name": "probe_pe_cycle", "sha256": REVIEWED_PROBE_ENVELOPE_SHA256,
+  }
+  assert evidence.report["dcra"]["original_dcra_raw"] == TARGET.crc_residue
+  assert evidence.report["host_checks"] == {
+    "combined_crc32": binascii.crc32(result.regions[0].data + result.regions[1].data),
+    "crc_sector_crc32": binascii.crc32(result.regions[1].data),
+    "original_adjust_word": TARGET.crc_original_adjust_word,
+    "patched_adjust_word": TARGET.crc_patched_adjust_word,
+    "patched_prefix_sw": TARGET.crc_patched_prefix_sw,
+    "residue": TARGET.crc_residue,
+    "target_sector_crc32": binascii.crc32(result.regions[0].data),
+    "target_sector_sha256": hashlib.sha256(result.regions[0].data).hexdigest(),
+  }
+
+
+def test_probe_rejects_arbitrary_self_declared_payload_before_any_side_effect(probe_case):
+  from eps_patch.probe import PayloadImage, ProbeError, run_probe
+
+  layout, target, _payload, identity, result = probe_case
+  arbitrary = bytes(target.envelope_length)
+  payload = PayloadImage(
+    name="probe_pe_cycle",
+    envelope=arbitrary,
+    sha256=hashlib.sha256(arbitrary).hexdigest(),
+  )
+  events = []
+
+  with pytest.raises(ProbeError, match="reviewed.*envelope"):
+    run_probe(
+      layout=layout,
+      payload=payload,
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport") or FakeTransport(identity, result),
+      target=target,
+      new_uds=False,
+    )
+
+  assert events == []
+  assert not layout.probe_directory.exists()
 
 
 @pytest.mark.parametrize(
@@ -171,6 +223,16 @@ def test_probe_runs_one_payload_and_atomically_installs_complete_pass(probe_case
         identity, replace(result, faci_values=result.faci_values[:-1] + (1,)),
       ),
       "RESTORED",
+    ),
+    (
+      lambda identity, result: (
+        identity,
+        replace(
+          result,
+          faci_values=result.faci_values[:28] + (0,) + result.faci_values[29:],
+        ),
+      ),
+      "CONFIGURED",
     ),
     (
       lambda identity, result: (
@@ -212,8 +274,15 @@ def test_probe_runs_one_payload_and_atomically_installs_complete_pass(probe_case
       "CRC sector",
     ),
     (
-      lambda identity, result: (identity, replace(result, crc=None)),
-      "CRC observation",
+      lambda identity, result: (identity, replace(result, dcra=None)),
+      "DCRA observation",
+    ),
+    (
+      lambda identity, result: (
+        identity,
+        _replace_dcra(result, patched_dcra_raw=0),
+      ),
+      "DCRA residue",
     ),
   ],
 )
@@ -239,6 +308,7 @@ def test_probe_failure_never_installs_any_trusted_artifact(probe_case, mutation,
 
 def test_probe_protocol_layout_is_one_two_region_crc_and_faci_stream():
   assert len(FACI_PE_CYCLE_DIAGNOSTICS) == 40
+  assert len(DCRA_RECORDS) == 11
   assert tuple(name.split(".", 1)[0] for name, _address, _width in FACI_PE_CYCLE_DIAGNOSTICS) == (
     ("PRE",) * 8 + ("UNLOCKED",) * 8 + ("WINDOWS",) * 8
     + ("CONFIGURED",) * 8 + ("RESTORED",) * 8
@@ -275,7 +345,7 @@ def test_stream_collector_decodes_the_comprehensive_probe_as_one_execution(probe
     combined.extend(region.data)
   frames.extend(
     bytes([FrameType.CRC_RECORD, slot, 4, 0]) + struct.pack("<I", value)
-    for slot, value in enumerate(expected.crc_values)
+    for slot, value in enumerate(expected.dcra_values)
   )
   frames.extend(
     bytes([FrameType.MAGIC, slot, 0, 0]) + struct.pack("<I", value)

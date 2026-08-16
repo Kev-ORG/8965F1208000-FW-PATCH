@@ -11,9 +11,10 @@ from typing import Callable, Protocol
 from .artifacts import sha256_bytes
 from .evidence import install_probe_pass
 from .manifest import TARGET, TargetManifest
+from .payload import PROBE_PE_CYCLE_ENVELOPE_SHA256
 from .paths import ArtifactLayout
 from .protocol import (
-  CrcObservation,
+  DcraObservation,
   FACI_DIAGNOSTICS,
   FACI_PE_CYCLE_DIAGNOSTICS,
   OP_FACI_PE_CYCLE,
@@ -43,6 +44,8 @@ class PayloadImage:
       or self.sha256 != hashlib.sha256(self.envelope).hexdigest()
     ):
       raise ProbeError("probe payload SHA-256 mismatch")
+    if self.sha256 != PROBE_PE_CYCLE_ENVELOPE_SHA256:
+      raise ProbeError("probe payload is not the exact reviewed retained envelope")
 
 
 class ProbeTransport(Protocol):
@@ -64,7 +67,7 @@ _EXPECTED_SNAPSHOTS = (
   _PRE,
   _PRE[:3] + (1,) + _PRE[4:],
   _PRE[:3] + (1,) + _PRE[4:6] + (1, 1),
-  _PRE[:3] + (1, 1, 0x3B00, 1, 1),
+  _PRE[:3] + (1, 1, 0, 1, 1),
   _PRE,
 )
 
@@ -103,7 +106,7 @@ def run_probe(
       payload, operation=OP_FACI_PE_CYCLE, new_uds=new_uds,
     )
 
-  target_sector, crc_sector, observation, snapshots, primary, cleanup = (
+  target_sector, crc_sector, observation, host_checks, snapshots, primary, cleanup = (
     _validate_result(result, target)
   )
   identity_record = _identity_record(identity)
@@ -113,6 +116,7 @@ def run_probe(
     "workflow": "faci-pe-cycle",
     "result": "PASS",
     "identity": identity_record,
+    "payload": {"name": payload.name, "sha256": payload.sha256},
     "new_uds": new_uds,
     "sectors": {"target": target_descriptor, "crc": crc_descriptor},
     "instruction": {
@@ -120,7 +124,8 @@ def run_probe(
       "original": target.original_instruction.hex(),
     },
     "snapshots": snapshots,
-    "crc": _crc_record(observation),
+    "dcra": _dcra_record(observation),
+    "host_checks": host_checks,
     "outcome": {"primary_code": primary, "cleanup_code": cleanup},
     "validation_errors": [],
   }
@@ -147,7 +152,10 @@ def _validate_identity(identity: object, target: TargetManifest) -> None:
 
 def _validate_result(
   result: object, target: TargetManifest,
-) -> tuple[bytes, bytes, CrcObservation, dict[str, dict[str, int]], int, int]:
+) -> tuple[
+  bytes, bytes, DcraObservation, dict[str, object],
+  dict[str, dict[str, int]], int, int,
+]:
   if type(result) is not StreamResult:
     raise ProbeError("probe stream result has the wrong concrete type")
   if result.operation != OP_FACI_PE_CYCLE:
@@ -193,10 +201,16 @@ def _validate_result(
   magic_offset = target.magic_addresses[1] - target.crc_sector_base
   if crc_sector[magic_offset:magic_offset + 4] != target.magic_word.to_bytes(4, "little"):
     raise ProbeError("probe CRC sector contains the wrong boot magic")
+  live_adjustment = int.from_bytes(
+    crc_sector[target.crc_adjust_offset:target.crc_adjust_offset + 4], "little",
+  )
+  if live_adjustment != target.crc_original_adjust_word:
+    raise ProbeError("probe CRC sector contains the wrong reviewed adjustment word")
 
   snapshots = _validate_diagnostics(result.faci_values)
-  observation = _validate_crc(result, target_sector, crc_sector, target)
-  return target_sector, crc_sector, observation, snapshots, primary, cleanup
+  observation = _validate_dcra(result, crc_sector, target)
+  host_checks = _host_checks(target_sector, crc_sector, target)
+  return target_sector, crc_sector, observation, host_checks, snapshots, primary, cleanup
 
 
 def _validate_diagnostics(values: object) -> dict[str, dict[str, int]]:
@@ -210,7 +224,16 @@ def _validate_diagnostics(values: object) -> dict[str, dict[str, int]]:
     raw = values[start:start + len(_REGISTERS)]
     if any(type(value) is not int for value in raw):
       raise ProbeError(f"probe {checkpoint} FACI diagnostic has a non-integer value")
-    if tuple(raw) != expected:
+    if checkpoint == "CONFIGURED":
+      # FREQR is write-triggered but reads back as zero on the reviewed EPS.
+      required_indices = (0, 1, 2, 3, 6, 7)
+      if any(raw[index] != expected[index] for index in required_indices):
+        raise ProbeError(
+          "probe CONFIGURED FACI diagnostic does not match the reviewed state"
+        )
+      if (raw[4] & 1) != 1:
+        raise ProbeError("probe CONFIGURED REG88 bit 0 does not prove P/E entry")
+    elif tuple(raw) != expected:
       raise ProbeError(f"probe {checkpoint} FACI diagnostic does not match the reviewed state")
     snapshots[checkpoint] = dict(zip(_REGISTERS, raw))
   if tuple(values[-len(_REGISTERS):]) != tuple(values[:len(_REGISTERS)]):
@@ -218,48 +241,62 @@ def _validate_diagnostics(values: object) -> dict[str, dict[str, int]]:
   return snapshots
 
 
-def _validate_crc(
+def _validate_dcra(
   result: StreamResult,
-  target_sector: bytes,
   crc_sector: bytes,
   target: TargetManifest,
-) -> CrcObservation:
-  observation = result.crc
-  if type(observation) is not CrcObservation:
-    raise ProbeError("probe CRC observation is missing")
-  values = tuple(_u32(getattr(observation, field.name), field.name) for field in fields(CrcObservation))
-  if type(result.crc_values) is not tuple or tuple(result.crc_values) != values:
-    raise ProbeError("probe CRC observation records are incomplete or contradictory")
+) -> DcraObservation:
+  observation = result.dcra
+  if type(observation) is not DcraObservation:
+    raise ProbeError("probe DCRA observation is missing")
+  values = tuple(
+    _u32(getattr(observation, field.name), field.name)
+    for field in fields(DcraObservation)
+  )
+  if type(result.dcra_values) is not tuple or tuple(result.dcra_values) != values:
+    raise ProbeError("probe DCRA observation records are incomplete or contradictory")
+  if result.crc_values != () or result.crc is not None:
+    raise ProbeError("probe stream exposed forbidden payload software CRC evidence")
   if (observation.range_start, observation.range_end) != (
     target.crc_range_start, target.crc_range_end,
   ):
-    raise ProbeError("probe CRC observation range does not match the target")
+    raise ProbeError("probe DCRA observation range does not match the target")
   if observation.adjust_address != target.crc_adjust_address:
-    raise ProbeError("probe CRC observation adjustment address does not match the target")
+    raise ProbeError("probe DCRA observation adjustment address does not match the target")
   live_adjustment = int.from_bytes(
     crc_sector[target.crc_adjust_offset:target.crc_adjust_offset + 4], "little",
   )
   if observation.old_adjust_word != live_adjustment:
-    raise ProbeError("probe CRC sector disagrees with its CRC observation")
-  if observation.new_adjust_word != (observation.patched_prefix_sw ^ 0xFFFFFFFF):
-    raise ProbeError("probe CRC adjustment does not match the reviewed residue formula")
+    raise ProbeError("probe CRC sector disagrees with its DCRA observation")
+  if observation.new_adjust_word != target.crc_patched_adjust_word:
+    raise ProbeError("probe DCRA adjustment does not match the reviewed patched word")
   if (
-    observation.original_sw_full != observation.original_dcra_raw
-    or observation.patched_sw_full != observation.patched_dcra_raw
-    or observation.original_sw_full != 0xFFFFFFFF
-    or observation.patched_sw_full != 0xFFFFFFFF
+    observation.original_dcra_raw != target.crc_residue
+    or observation.patched_dcra_raw != target.crc_residue
   ):
-    raise ProbeError("probe CRC/DCRA evidence does not satisfy the boot predicate")
+    raise ProbeError("probe DCRA residue does not satisfy the reviewed boot predicate")
   if (observation.exit_ctl, observation.exit_cout) != (
     observation.entry_ctl, observation.entry_cout,
   ):
     raise ProbeError("probe DCRA state was not exactly restored")
-  if (
-    observation.sram_echo_length != target.sector_length
-    or observation.sram_echo_crc32 != binascii.crc32(target_sector)
-  ):
-    raise ProbeError("probe SRAM backup evidence does not match the target sector")
   return observation
+
+
+def _host_checks(
+  target_sector: bytes, crc_sector: bytes, target: TargetManifest,
+) -> dict[str, object]:
+  if target.crc_patched_prefix_sw ^ target.crc_residue != target.crc_patched_adjust_word:
+    raise ProbeError("target CRC adjustment does not match the reviewed residue formula")
+  return {
+    "target_sector_sha256": sha256_bytes(target_sector),
+    "target_sector_crc32": binascii.crc32(target_sector),
+    "crc_sector_crc32": binascii.crc32(crc_sector),
+    "combined_crc32": binascii.crc32(target_sector + crc_sector),
+    "original_adjust_word": target.crc_original_adjust_word,
+    "patched_prefix_sw": target.crc_patched_prefix_sw,
+    "patched_adjust_word": target.crc_patched_adjust_word,
+    "residue": target.crc_residue,
+  }
 
 
 def _u32(value: object, label: str) -> int:
@@ -285,5 +322,5 @@ def _descriptor(address: int, data: bytes) -> dict[str, object]:
   return {"address": address, "length": len(data), "sha256": sha256_bytes(data)}
 
 
-def _crc_record(observation: CrcObservation) -> dict[str, int]:
-  return {field.name: getattr(observation, field.name) for field in fields(CrcObservation)}
+def _dcra_record(observation: DcraObservation) -> dict[str, int]:
+  return {field.name: getattr(observation, field.name) for field in fields(DcraObservation)}

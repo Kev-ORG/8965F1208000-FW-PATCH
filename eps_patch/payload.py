@@ -24,10 +24,13 @@ DESCRIPTOR_OFFSET = 0xFE0
 AUTHENTICATOR_OFFSET = 0xFF0
 SHELLCODE_LIMIT = JUMP_ADDRESS_OFFSET
 PLAINTEXT_BODY_LENGTH = AUTHENTICATOR_OFFSET
+PROBE_PE_CYCLE_ENVELOPE_SHA256 = (
+  "a8b4bddce38bfbea34df4088b8827c8c5bd46bad4ab9fe4f764bba157a5338cc"
+)
 BUILT_PAYLOADS = {
   "probe_pe_cycle": {
-    "size": 3628,
-    "sha256": "c87c72c17764ee885cf3534743567d7adc0a50f387c42315a0dd02fd94c8aef0",
+    "size": 2864,
+    "sha256": "d3a3cf534930b1b5e58642b3e1bd2aa10f3c9352da9852bd04cc21cdeee6b4a1",
   },
   "patch": {
     "size": 4016,
@@ -69,6 +72,9 @@ BUILT_PAYLOADS = {
     "size": 3946,
     "sha256": "3698aca109af9e700b36a8c7fc4c7bacc7ca22acb9a2fa40864f1abd03cd685a",
   },
+}
+BUILT_PAYLOAD_ENTRYPOINTS = {
+  "probe_pe_cycle": "0xfebf0000",
 }
 
 PATCH_CRC_INTENT_MAGIC = 0x43524350
@@ -314,14 +320,23 @@ def load_built_shellcode(build_directory: Path, name: str) -> bytes:
     binary = binary_path.read_bytes()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     recorded = manifest["payloads"][name]
+    required_fields = {"size", "sha256"}
+    expected_entrypoint = BUILT_PAYLOAD_ENTRYPOINTS.get(name)
+    if expected_entrypoint is not None:
+      required_fields.add("entrypoint")
     if (
-      type(recorded) is not dict or set(recorded) != {"size", "sha256"}
+      type(recorded) is not dict or set(recorded) != required_fields
       or type(recorded.get("size")) is not int
       or type(recorded.get("sha256")) is not str
+      or (
+        expected_entrypoint is not None
+        and type(recorded.get("entrypoint")) is not str
+      )
     ):
-      raise TypeError("payload manifest fields are not exact size/SHA-256 types")
+      raise TypeError("payload manifest fields are not exact reviewed types")
     recorded_size = recorded["size"]
     recorded_digest = recorded["sha256"]
+    recorded_entrypoint = recorded.get("entrypoint")
   except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
     raise PayloadError(f"cannot load the {name} build artifact: {exc}") from exc
 
@@ -334,6 +349,8 @@ def load_built_shellcode(build_directory: Path, name: str) -> bytes:
     )
   if {"size": recorded_size, "sha256": recorded_digest} != expected:
     raise PayloadError(f"{name} build manifest does not match the pinned binary")
+  if recorded_entrypoint != expected_entrypoint:
+    raise PayloadError(f"{name} build manifest has the wrong entrypoint")
   if len(binary) > SHELLCODE_LIMIT:
     raise PayloadError(
       f"{name} shellcode overlaps bootloader metadata starting at 0xfd0"

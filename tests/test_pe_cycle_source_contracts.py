@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PATH = ROOT / "payload" / "probe_pe_cycle.c"
+DCRA_PATH = ROOT / "payload" / "dcra.h"
 
 
 def source_text() -> str:
@@ -46,13 +47,42 @@ def test_comprehensive_probe_checks_context_and_idle_before_any_faci_store():
   assert source.index("snapshot_is_idle(&snapshots[0])") < first_store
 
 
+def test_comprehensive_probe_keeps_magic_and_instruction_pre_gates_before_faci_activity():
+  source = source_text()
+  assert "magic0 != MAGIC_WORD || magic1 != MAGIC_WORD" in source
+  instruction_gate = source.index("!equal_bytes(")
+  assert "(volatile uint8_t *)(PATCH_ADDRESS - 2u), original_instruction, 4u" in re.sub(
+    r"\s+", " ", source,
+  )
+  first_store = source.index("FACI_FPCKAR = 0xAA01u")
+  assert source.index("magic0 != MAGIC_WORD || magic1 != MAGIC_WORD") < first_store
+  assert instruction_gate < first_store
+
+
+def test_comprehensive_probe_moves_semantic_hash_and_software_crc_to_host():
+  source = source_text()
+  dcra = DCRA_PATH.read_text(encoding="utf-8")
+  for moved in (
+    "original_sha256", "sha256_k", "sha256_compress", "sha256_sector",
+    "crc_full_observation", "crc_region", "SRAM_ECHO", "PATCHED_PREFIX_SW",
+    "ORIGINAL_SW_FULL", "PATCHED_SW_FULL",
+  ):
+    assert moved not in source
+    assert moved not in dcra
+  assert "crc32_update" not in dcra
+  assert "crc32_update" not in source
+
+
 def test_comprehensive_probe_streams_two_full_regions_crc_dcra_magic_and_40_diagnostics():
   source = source_text()
   assert "PROTO_OP_FACI_PE_CYCLE" in source
   assert "stream_probe_region(PROTO_OP_FACI_PE_CYCLE, 0u, TARGET_BASE" in source
   assert "stream_probe_region(PROTO_OP_FACI_PE_CYCLE, 1u, CRC_SECTOR_BASE" in source
-  assert "PROTO_CRC_RECORD_COUNT" in source
+  assert "PROTO_DCRA_RECORD_COUNT" in source
   assert "capture_dcra" in source and "restore_dcra" in source
+  assert "dcra_full_raw(0u, &guard)" in source
+  assert "dcra_full_raw(1u, &guard)" in source
+  assert "CRC_PATCHED_ADJUST_WORD 0xD1F4CE24u" in DCRA_PATH.read_text(encoding="utf-8")
   assert "slot < 40u" in source
   assert "send_diagnostic(slot, widths[slot & 7u], snapshots[slot]" in source
   assert source.count("send_status_code(1u, outcome") == 1
@@ -64,9 +94,21 @@ def test_comprehensive_probe_uses_bounded_polls_and_stage_aware_exact_cleanup():
   for offset in (0, 8, 16, 24, 32):
     assert f"capture_snapshot(&snapshots[{offset}])" in source
   assert "#define FACI_PE_POLL_LIMIT 100000u" in source
-  assert source.count("uint32_t spins = FACI_PE_POLL_LIMIT") >= 5
-  assert source.count("while (spins != 0u)") >= 5
+  assert "wait_register_masked" in source
+  assert source.count("uint32_t spins = FACI_PE_POLL_LIMIT") == 1
+  assert source.count("while (spins != 0u)") == 1
   assert not re.search(r"while\s*\([^)]*spins--", source)
+  for call in (
+    "wait_register_masked(0xFFA10084u, 2u, 0xFFFFu, 0x0001u",
+    "wait_register_masked(0xFFF8A430u, 4u, 0xFFFFFFFFu, 1u",
+    "wait_register_masked(0xFFF82410u, 4u, 0xFFFFFFFFu, 1u",
+    "wait_register_masked(0xFFA10088u, 2u, 1u, 1u",
+    "wait_register_masked(0xFFF8A430u, 4u, 0xFFFFFFFFu, 0u",
+    "wait_register_masked(0xFFF82410u, 4u, 0xFFFFFFFFu, 0u",
+    "wait_register_masked(0xFFA10088u, 2u, 1u, 0u",
+    "wait_register_masked(0xFFA10084u, 2u, 0x0081u, 0u",
+  ):
+    assert call in source
   for flag in ("unlock_attempted", "flwl_attempted", "flwe_attempted", "fentry_attempted"):
     assert flag in source
   cleanup_stores = [

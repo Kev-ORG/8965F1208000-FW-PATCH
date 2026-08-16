@@ -1,5 +1,8 @@
 import copy
+import binascii
+import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,6 +13,9 @@ from eps_patch.manifest import TARGET
 from eps_patch.paths import ArtifactLayout
 
 
+REVIEWED_PROBE_ENVELOPE_SHA256 = (
+  "a8b4bddce38bfbea34df4088b8827c8c5bd46bad4ab9fe4f764bba157a5338cc"
+)
 SNAPSHOTS = {
   "PRE": {
     "FPMON": 0x80, "FASTAT": 0x8000, "FAESTAT": 0, "REG84": 0,
@@ -25,7 +31,7 @@ SNAPSHOTS = {
   },
   "CONFIGURED": {
     "FPMON": 0x80, "FASTAT": 0x8000, "FAESTAT": 0, "REG84": 1,
-    "REG88": 1, "REG20": 0x3B00, "FLWL": 1, "FLWE": 1,
+    "REG88": 1, "REG20": 0, "FLWL": 1, "FLWE": 1,
   },
   "RESTORED": {
     "FPMON": 0x80, "FASTAT": 0x8000, "FAESTAT": 0, "REG84": 0,
@@ -51,11 +57,13 @@ def make_report(target_sector: bytes, crc_sector: bytes) -> dict[str, object]:
   old_adjustment = int.from_bytes(
     crc_sector[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4], "little",
   )
-  patched_prefix = 0x12345678
   return {
     "workflow": "faci-pe-cycle",
     "result": "PASS",
     "identity": identity(),
+    "payload": {
+      "name": "probe_pe_cycle", "sha256": REVIEWED_PROBE_ENVELOPE_SHA256,
+    },
     "new_uds": False,
     "sectors": {
       "target": descriptor(TARGET.sector_base, target_sector),
@@ -66,23 +74,28 @@ def make_report(target_sector: bytes, crc_sector: bytes) -> dict[str, object]:
       "original": TARGET.original_instruction.hex(),
     },
     "snapshots": copy.deepcopy(SNAPSHOTS),
-    "crc": {
+    "dcra": {
       "entry_ctl": 0x10203040,
       "entry_cout": 0x50607080,
       "range_start": TARGET.crc_range_start,
       "range_end": TARGET.crc_range_end,
       "adjust_address": TARGET.crc_adjust_address,
       "old_adjust_word": old_adjustment,
-      "patched_prefix_sw": patched_prefix,
-      "new_adjust_word": patched_prefix ^ 0xFFFFFFFF,
-      "original_sw_full": 0xFFFFFFFF,
-      "patched_sw_full": 0xFFFFFFFF,
-      "original_dcra_raw": 0xFFFFFFFF,
-      "patched_dcra_raw": 0xFFFFFFFF,
+      "new_adjust_word": TARGET.crc_patched_adjust_word,
+      "original_dcra_raw": TARGET.crc_residue,
+      "patched_dcra_raw": TARGET.crc_residue,
       "exit_ctl": 0x10203040,
       "exit_cout": 0x50607080,
-      "sram_echo_length": TARGET.sector_length,
-      "sram_echo_crc32": __import__("binascii").crc32(target_sector),
+    },
+    "host_checks": {
+      "target_sector_sha256": hashlib.sha256(target_sector).hexdigest(),
+      "target_sector_crc32": binascii.crc32(target_sector),
+      "crc_sector_crc32": binascii.crc32(crc_sector),
+      "combined_crc32": binascii.crc32(target_sector + crc_sector),
+      "original_adjust_word": TARGET.crc_original_adjust_word,
+      "patched_prefix_sw": TARGET.crc_patched_prefix_sw,
+      "patched_adjust_word": TARGET.crc_patched_adjust_word,
+      "residue": TARGET.crc_residue,
     },
     "outcome": {"primary_code": 0, "cleanup_code": 0},
     "validation_errors": [],
@@ -101,11 +114,19 @@ def make_metadata(target_sector: bytes, crc_sector: bytes) -> dict[str, object]:
 def valid_probe(tmp_path: Path):
   target_sector = bytearray((index * 17) & 0xFF for index in range(TARGET.sector_length))
   target_sector[TARGET.instruction_offset:TARGET.instruction_offset + 4] = TARGET.original_instruction
-  crc_sector = bytes((index * 29) & 0xFF for index in range(TARGET.sector_length))
+  target_sector = bytes(target_sector)
+  target = replace(TARGET, original_sha256=hashlib.sha256(target_sector).hexdigest())
+  crc_sector = bytearray((index * 29) & 0xFF for index in range(TARGET.sector_length))
+  crc_sector[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = (
+    TARGET.crc_original_adjust_word.to_bytes(4, "little")
+  )
+  magic_offset = TARGET.magic_addresses[1] - TARGET.crc_sector_base
+  crc_sector[magic_offset:magic_offset + 4] = TARGET.magic_word.to_bytes(4, "little")
+  crc_sector = bytes(crc_sector)
   layout = ArtifactLayout(tmp_path)
-  report = make_report(bytes(target_sector), crc_sector)
-  metadata = make_metadata(bytes(target_sector), crc_sector)
-  return layout, bytes(target_sector), crc_sector, report, metadata
+  report = make_report(target_sector, crc_sector)
+  metadata = make_metadata(target_sector, crc_sector)
+  return layout, target, target_sector, crc_sector, report, metadata
 
 
 def write_probe(layout: ArtifactLayout, target_sector: bytes, crc_sector: bytes, report, metadata) -> None:
@@ -117,7 +138,7 @@ def write_probe(layout: ArtifactLayout, target_sector: bytes, crc_sector: bytes,
 
 
 def test_installer_atomically_creates_complete_fixed_probe(valid_probe):
-  layout, target_sector, crc_sector, report, metadata = valid_probe
+  layout, target, target_sector, crc_sector, report, metadata = valid_probe
 
   result = install_probe_pass(layout, target_sector, crc_sector, report, metadata)
 
@@ -126,7 +147,7 @@ def test_installer_atomically_creates_complete_fixed_probe(valid_probe):
     "faci-pe-cycle-report.json", "original-sector-0x60000.bin",
     "original-sector-0xf8000.bin", "recovery-metadata.json",
   }
-  assert load_probe_pass(layout, TARGET).target_sector == target_sector
+  assert load_probe_pass(layout, target).target_sector == target_sector
   with pytest.raises(EvidenceError, match="already exists") as exc_info:
     install_probe_pass(layout, target_sector, crc_sector, report, metadata)
   assert str(layout.root) not in str(exc_info.value)
@@ -149,10 +170,10 @@ def test_atomic_rename_never_replaces_an_empty_probe_directory(tmp_path: Path):
 
 
 def test_semantic_loader_accepts_complete_pass_without_fixed_report_digest(valid_probe):
-  layout, target_sector, crc_sector, report, metadata = valid_probe
+  layout, target, target_sector, crc_sector, report, metadata = valid_probe
   write_probe(layout, target_sector, crc_sector, report, metadata)
 
-  evidence = load_probe_pass(layout, TARGET)
+  evidence = load_probe_pass(layout, target)
 
   assert evidence.identity.part_number == TARGET.part_number
   assert evidence.target_sector == target_sector
@@ -165,6 +186,8 @@ def test_semantic_loader_accepts_complete_pass_without_fixed_report_digest(valid
   [
     lambda report, metadata, target, crc: report.update(result="FAIL"),
     lambda report, metadata, target, crc: report["identity"].update(part_number="wrong"),
+    lambda report, metadata, target, crc: report["payload"].update(name="probe"),
+    lambda report, metadata, target, crc: report["payload"].update(sha256="0" * 64),
     lambda report, metadata, target, crc: report["snapshots"].pop("RESTORED"),
     lambda report, metadata, target, crc: report["outcome"].update(cleanup_code=1),
     lambda report, metadata, target, crc: report["instruction"].update(original="20e61000"),
@@ -174,23 +197,26 @@ def test_semantic_loader_accepts_complete_pass_without_fixed_report_digest(valid
     lambda report, metadata, target, crc: report["sectors"]["target"].update(address=TARGET.crc_sector_base),
     lambda report, metadata, target, crc: report["sectors"]["crc"].update(length=TARGET.sector_length - 1),
     lambda report, metadata, target, crc: report["snapshots"]["PRE"].update(FPMON=0),
+    lambda report, metadata, target, crc: report["snapshots"]["CONFIGURED"].update(REG88=0),
     lambda report, metadata, target, crc: report["outcome"].update(primary_code=1),
-    lambda report, metadata, target, crc: report["crc"].update(exit_ctl=1),
-    lambda report, metadata, target, crc: report["crc"].update(original_dcra_raw=0),
+    lambda report, metadata, target, crc: report["dcra"].update(exit_ctl=1),
+    lambda report, metadata, target, crc: report["dcra"].update(original_dcra_raw=0),
+    lambda report, metadata, target, crc: report["host_checks"].update(target_sector_crc32=0),
+    lambda report, metadata, target, crc: report["host_checks"].update(patched_prefix_sw=0),
   ],
 )
 def test_semantic_loader_rejects_non_pass_or_mismatched_evidence(valid_probe, mutation):
-  layout, target_sector, crc_sector, report, metadata = valid_probe
+  layout, target, target_sector, crc_sector, report, metadata = valid_probe
   mutation(report, metadata, target_sector, crc_sector)
   write_probe(layout, target_sector, crc_sector, report, metadata)
 
   with pytest.raises(EvidenceError):
-    load_probe_pass(layout, TARGET)
+    load_probe_pass(layout, target)
 
 
 @pytest.mark.parametrize("kind", ("missing", "malformed", "wrong-backup-size"))
 def test_semantic_loader_rejects_unreadable_or_incomplete_evidence(valid_probe, kind):
-  layout, target_sector, crc_sector, report, metadata = valid_probe
+  layout, target, target_sector, crc_sector, report, metadata = valid_probe
   if kind == "missing":
     pass
   elif kind == "malformed":
@@ -200,12 +226,12 @@ def test_semantic_loader_rejects_unreadable_or_incomplete_evidence(valid_probe, 
     write_probe(layout, target_sector[:-1], crc_sector, report, metadata)
 
   with pytest.raises(EvidenceError) as exc_info:
-    load_probe_pass(layout, TARGET)
+    load_probe_pass(layout, target)
   assert str(layout.root) not in str(exc_info.value)
 
 
 def test_installer_hides_staging_path_when_file_write_fails(valid_probe, monkeypatch):
-  layout, target_sector, crc_sector, report, metadata = valid_probe
+  layout, _target, target_sector, crc_sector, report, metadata = valid_probe
 
   def fail_write(path: Path, content: bytes) -> None:
     raise OSError(f"simulated write failure: {path}")
@@ -218,13 +244,30 @@ def test_installer_hides_staging_path_when_file_write_fails(valid_probe, monkeyp
 
 
 def test_semantic_loader_rejects_backup_with_changed_instruction_context(valid_probe):
-  layout, target_sector, crc_sector, report, metadata = valid_probe
+  layout, target, target_sector, crc_sector, report, metadata = valid_probe
   changed = bytearray(target_sector)
   changed[TARGET.instruction_offset + 2] ^= 1
   changed = bytes(changed)
   report["sectors"]["target"] = descriptor(TARGET.sector_base, changed)
   metadata["target_backup"] = descriptor(TARGET.sector_base, changed)
   write_probe(layout, changed, crc_sector, report, metadata)
+  changed_target = replace(
+    target, original_sha256=hashlib.sha256(changed).hexdigest(),
+  )
 
   with pytest.raises(EvidenceError, match="instruction context"):
-    load_probe_pass(layout, TARGET)
+    load_probe_pass(layout, changed_target)
+
+
+def test_semantic_loader_rejects_coordinated_target_backup_tampering(valid_probe):
+  layout, target, target_sector, crc_sector, report, metadata = valid_probe
+  changed = bytes([target_sector[0] ^ 1]) + target_sector[1:]
+  report["sectors"]["target"] = descriptor(target.sector_base, changed)
+  metadata["target_backup"] = descriptor(target.sector_base, changed)
+  report["host_checks"]["target_sector_crc32"] = binascii.crc32(changed)
+  report["host_checks"]["combined_crc32"] = binascii.crc32(changed + crc_sector)
+  report["host_checks"]["target_sector_sha256"] = hashlib.sha256(changed).hexdigest()
+  write_probe(layout, changed, crc_sector, report, metadata)
+
+  with pytest.raises(EvidenceError, match="reviewed original"):
+    load_probe_pass(layout, target)

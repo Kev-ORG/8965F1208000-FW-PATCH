@@ -39,12 +39,33 @@ def test_crc_manifest_uses_physical_addresses_without_translation():
   assert (TARGET.crc_range_start, TARGET.crc_range_end) == (0x18000, 0xFFDF0)
   assert (TARGET.crc_sector_base, TARGET.crc_sector_end) == (0xF8000, 0x100000)
   assert TARGET.crc_adjust_address == 0xFFDEC
+  assert TARGET.crc_original_adjust_word == 0x0962887F
+  assert TARGET.crc_patched_prefix_sw == 0x2E0B31DB
+  assert TARGET.crc_patched_adjust_word == 0xD1F4CE24
+  assert TARGET.crc_residue == 0xFFFFFFFF
+  assert TARGET.crc_patched_prefix_sw ^ TARGET.crc_residue == TARGET.crc_patched_adjust_word
   assert TARGET.pure_code_file_offset(TARGET.crc_adjust_address) == 0xFFDEC
   assert TARGET.sram_buffer == 0xFEBF2000
   assert TARGET.sram_buffer + TARGET.sector_length <= TARGET.sram_end
   assert (TARGET.runtime_stack_address, TARGET.runtime_stack_length) == (0xFEBF1000, 0x188)
   assert (TARGET.runtime_stub_address, TARGET.runtime_stub_length) == (0xFEBF1188, 0x78)
   assert (TARGET.intent_address, TARGET.intent_length) == (0xFEBF0600, 0x80)
+
+
+@pytest.mark.parametrize(
+  ("field", "value"),
+  (
+    ("crc_original_adjust_word", 0),
+    ("crc_patched_prefix_sw", 0),
+    ("crc_patched_adjust_word", 0),
+    ("crc_residue", 0),
+  ),
+)
+def test_manifest_rejects_reviewed_crc_constant_drift(field, value):
+  from eps_patch.manifest import TARGET
+
+  with pytest.raises(ValueError, match="CRC"):
+    replace(TARGET, **{field: value}).validate()
 
 
 @pytest.mark.parametrize(

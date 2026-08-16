@@ -39,6 +39,10 @@ class TargetManifest:
   crc_sector_base: int
   crc_sector_end: int
   crc_adjust_address: int
+  crc_original_adjust_word: int
+  crc_patched_prefix_sw: int
+  crc_patched_adjust_word: int
+  crc_residue: int
 
   @property
   def sector_end(self) -> int:
@@ -93,6 +97,15 @@ class TargetManifest:
       raise ValueError("CRC sector is not the exact final 32 KiB Code Flash sector")
     if self.crc_adjust_address != 0xFFDEC or self.crc_adjust_address + 4 != self.crc_range_end:
       raise ValueError("CRC adjustment word is not the exact range terminator")
+    if (
+      self.crc_original_adjust_word,
+      self.crc_patched_prefix_sw,
+      self.crc_patched_adjust_word,
+      self.crc_residue,
+    ) != (0x0962887F, 0x2E0B31DB, 0xD1F4CE24, 0xFFFFFFFF):
+      raise ValueError("CRC constants do not match the reviewed original and patched states")
+    if self.crc_patched_prefix_sw ^ self.crc_residue != self.crc_patched_adjust_word:
+      raise ValueError("CRC patched adjustment does not match the reviewed residue formula")
     if not self.crc_sector_base <= self.crc_adjust_address < self.crc_sector_end - 3:
       raise ValueError("CRC adjustment word lies outside the CRC sector")
     if (self.ram_address, self.envelope_length) != (0xFEBF0000, 0x1000):
@@ -158,5 +171,9 @@ TARGET = TargetManifest(
   crc_sector_base=0xF8000,
   crc_sector_end=0x100000,
   crc_adjust_address=0xFFDEC,
+  crc_original_adjust_word=0x0962887F,
+  crc_patched_prefix_sw=0x2E0B31DB,
+  crc_patched_adjust_word=0xD1F4CE24,
+  crc_residue=0xFFFFFFFF,
 )
 TARGET.validate()

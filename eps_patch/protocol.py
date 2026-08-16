@@ -33,6 +33,11 @@ CRC_RECORDS = (
   "ORIGINAL_SW_FULL", "PATCHED_SW_FULL", "ORIGINAL_DCRA_RAW", "PATCHED_DCRA_RAW",
   "EXIT_CTL", "EXIT_COUT", "SRAM_ECHO_LENGTH", "SRAM_ECHO_CRC32",
 )
+DCRA_RECORDS = (
+  "ENTRY_CTL", "ENTRY_COUT", "RANGE_START", "RANGE_END", "ADJUST_ADDRESS",
+  "OLD_ADJUST_WORD", "NEW_ADJUST_WORD", "ORIGINAL_DCRA_RAW",
+  "PATCHED_DCRA_RAW", "EXIT_CTL", "EXIT_COUT",
+)
 PATCH_CRC_STAGES = (
   "PRECHECK", "TARGET_ENTER", "TARGET_ERASE", "TARGET_PROGRAM",
   "TARGET_EXIT_READBACK", "CRC_ENTER", "CRC_ERASE", "CRC_PROGRAM",
@@ -120,6 +125,27 @@ class CrcObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class DcraObservation:
+  entry_ctl: int
+  entry_cout: int
+  range_start: int
+  range_end: int
+  adjust_address: int
+  old_adjust_word: int
+  new_adjust_word: int
+  original_dcra_raw: int
+  patched_dcra_raw: int
+  exit_ctl: int
+  exit_cout: int
+
+  @classmethod
+  def from_values(cls, values: tuple[int, ...]) -> "DcraObservation":
+    if len(values) != len(DCRA_RECORDS):
+      raise ProtocolError("DCRA observation must contain exactly 11 records")
+    return cls(*values)
+
+
+@dataclass(frozen=True, slots=True)
 class StreamResult:
   operation: int
   sector: bytes | None
@@ -129,6 +155,8 @@ class StreamResult:
   regions: tuple[RegionResult, ...] = ()
   crc_values: tuple[int, ...] = ()
   crc: CrcObservation | None = None
+  dcra_values: tuple[int, ...] = ()
+  dcra: DcraObservation | None = None
 
 
 class CandidateWriterFailure(ProtocolError):
@@ -501,10 +529,14 @@ class CrcStreamCollector:
       if frame_type is not FrameType.CRC_RECORD:
         raise ProtocolError("expected CRC_RECORD")
       slot = data[1]
-      if data[2:4] != b"\x04\x00" or slot != len(self._crc_values) or slot >= len(CRC_RECORDS):
+      record_count = (
+        len(DCRA_RECORDS)
+        if self._expected_operation == OP_FACI_PE_CYCLE else len(CRC_RECORDS)
+      )
+      if data[2:4] != b"\x04\x00" or slot != len(self._crc_values) or slot >= record_count:
         raise ProtocolError("invalid, duplicate, or out-of-sequence CRC record")
       self._crc_values.append(struct.unpack_from("<I", data, 4)[0])
-      if len(self._crc_values) == len(CRC_RECORDS):
+      if len(self._crc_values) == record_count:
         self._state = "MAGIC"
       return
     if self._state == "MAGIC":
@@ -586,13 +618,22 @@ class CrcStreamCollector:
     if not self._finished:
       raise ProtocolError("stream has no valid END record")
     values = tuple(self._crc_values)
+    common = {
+      "operation": self._expected_operation,
+      "sector": None,
+      "magic_words": (self._magic[0], self._magic[1]),
+      "statuses": tuple(self._statuses),
+      "faci_values": tuple(self._faci_values),
+      "regions": tuple(self._regions),
+    }
+    if self._expected_operation == OP_FACI_PE_CYCLE:
+      return StreamResult(
+        **common,
+        dcra_values=values,
+        dcra=DcraObservation.from_values(values),
+      )
     return StreamResult(
-      operation=self._expected_operation,
-      sector=None,
-      magic_words=(self._magic[0], self._magic[1]),
-      statuses=tuple(self._statuses),
-      faci_values=tuple(self._faci_values),
-      regions=tuple(self._regions),
+      **common,
       crc_values=values,
       crc=CrcObservation.from_values(values),
     )

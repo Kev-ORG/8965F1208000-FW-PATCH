@@ -16,6 +16,7 @@ from pathlib import Path
 from .artifacts import sha256_bytes
 from .manifest import TargetManifest
 from .paths import ArtifactLayout
+from .payload import PROBE_PE_CYCLE_ENVELOPE_SHA256
 from .protocol import FACI_DIAGNOSTICS
 from .transport import EcuIdentity
 
@@ -39,7 +40,7 @@ _EXPECTED_SNAPSHOTS = {
   "PRE": _PRE,
   "UNLOCKED": _PRE[:3] + (1,) + _PRE[4:],
   "WINDOWS": _PRE[:3] + (1,) + _PRE[4:6] + (1, 1),
-  "CONFIGURED": _PRE[:3] + (1, 1, 0x3B00, 1, 1),
+  "CONFIGURED": _PRE[:3] + (1, 1, 0, 1, 1),
   "RESTORED": _PRE,
 }
 
@@ -100,10 +101,16 @@ def load_probe_pass(layout: ArtifactLayout, target: TargetManifest) -> TrustedPr
   crc_sector = _read_bytes(layout.crc_backup, "CRC backup")
   if len(target_sector) != target.sector_length or len(crc_sector) != target.sector_length:
     raise EvidenceError("probe backups must both contain exactly one sector")
+  if sha256_bytes(target_sector) != target.original_sha256:
+    raise EvidenceError("target backup is not the target manifest's reviewed original")
 
   _require_exact_keys(
     report,
-    {"workflow", "result", "identity", "new_uds", "sectors", "instruction", "snapshots", "crc", "outcome", "validation_errors"},
+    {
+      "workflow", "result", "identity", "payload", "new_uds", "sectors",
+      "instruction", "snapshots", "dcra", "host_checks", "outcome",
+      "validation_errors",
+    },
     "probe report",
   )
   if report["workflow"] != "faci-pe-cycle" or report["result"] != "PASS":
@@ -112,11 +119,13 @@ def load_probe_pass(layout: ArtifactLayout, target: TargetManifest) -> TrustedPr
     raise EvidenceError("probe report UDS variant does not match target")
 
   identity = _parse_identity(report["identity"], target)
+  _validate_payload(report["payload"])
   _validate_descriptor(report["sectors"], "target", target.sector_base, target_sector)
   _validate_descriptor(report["sectors"], "crc", target.crc_sector_base, crc_sector)
   _validate_instruction(report["instruction"], target, target_sector)
   _validate_snapshots(report["snapshots"])
-  _validate_crc(report["crc"], target_sector, crc_sector, target)
+  _validate_dcra(report["dcra"], crc_sector, target)
+  _validate_host_checks(report["host_checks"], target_sector, crc_sector, target)
   _validate_outcome(report["outcome"], report["validation_errors"])
   _validate_metadata(metadata, report["identity"], report["sectors"])
 
@@ -126,6 +135,15 @@ def load_probe_pass(layout: ArtifactLayout, target: TargetManifest) -> TrustedPr
     crc_sector=crc_sector,
     report=report,
   )
+
+
+def _validate_payload(value: object) -> None:
+  payload = _require_object(value, "probe payload")
+  _require_exact_keys(payload, {"name", "sha256"}, "probe payload")
+  if payload != {
+    "name": "probe_pe_cycle", "sha256": PROBE_PE_CYCLE_ENVELOPE_SHA256,
+  }:
+    raise EvidenceError("probe payload is not the exact reviewed retained envelope")
 
 
 def _validate_metadata(metadata: object, report_identity: object, report_sectors: object) -> None:
@@ -202,7 +220,15 @@ def _validate_snapshots(value: object) -> None:
     _require_exact_keys(snapshot, set(_REGISTER_NAMES), f"{checkpoint} FACI snapshot")
     expected = _EXPECTED_SNAPSHOTS[checkpoint]
     for name, wanted in zip(_REGISTER_NAMES, expected):
-      if type(snapshot[name]) is not int or snapshot[name] != wanted:
+      if type(snapshot[name]) is not int:
+        raise EvidenceError(f"{checkpoint} FACI snapshot has an unexpected {name} value")
+      if checkpoint == "CONFIGURED" and name == "REG20":
+        continue
+      if checkpoint == "CONFIGURED" and name == "REG88":
+        if (snapshot[name] & 1) != 1:
+          raise EvidenceError("CONFIGURED REG88 bit 0 does not prove P/E entry")
+        continue
+      if snapshot[name] != wanted:
         raise EvidenceError(f"{checkpoint} FACI snapshot has an unexpected {name} value")
 
 
@@ -220,50 +246,67 @@ def _validate_outcome(outcome: object, validation_errors: object) -> None:
     raise EvidenceError("probe report has validation errors")
 
 
-def _validate_crc(
+def _validate_dcra(
+  value: object,
+  crc_sector: bytes,
+  target: TargetManifest,
+) -> None:
+  record = _require_object(value, "DCRA observation")
+  expected_keys = {
+    "entry_ctl", "entry_cout", "range_start", "range_end", "adjust_address",
+    "old_adjust_word", "new_adjust_word", "original_dcra_raw",
+    "patched_dcra_raw", "exit_ctl", "exit_cout",
+  }
+  _require_exact_keys(record, expected_keys, "DCRA observation")
+  if any(type(record[name]) is not int or not 0 <= record[name] <= 0xFFFFFFFF for name in expected_keys):
+    raise EvidenceError("DCRA observation values must be unsigned 32-bit integers")
+  if (record["range_start"], record["range_end"], record["adjust_address"]) != (
+    target.crc_range_start, target.crc_range_end, target.crc_adjust_address,
+  ):
+    raise EvidenceError("DCRA observation addresses do not match target")
+  old_adjustment = int.from_bytes(
+    crc_sector[target.crc_adjust_offset:target.crc_adjust_offset + 4], "little",
+  )
+  if (
+    old_adjustment != target.crc_original_adjust_word
+    or record["old_adjust_word"] != old_adjustment
+  ):
+    raise EvidenceError("DCRA observation old adjustment does not match reviewed backup")
+  if record["new_adjust_word"] != target.crc_patched_adjust_word:
+    raise EvidenceError("DCRA observation patched adjustment is invalid")
+  if (
+    record["original_dcra_raw"] != target.crc_residue
+    or record["patched_dcra_raw"] != target.crc_residue
+  ):
+    raise EvidenceError("DCRA observation does not satisfy reviewed boot residue")
+  if (record["exit_ctl"], record["exit_cout"]) != (
+    record["entry_ctl"], record["entry_cout"],
+  ):
+    raise EvidenceError("DCRA exit state does not match entry state")
+
+
+def _validate_host_checks(
   value: object,
   target_sector: bytes,
   crc_sector: bytes,
   target: TargetManifest,
 ) -> None:
-  record = _require_object(value, "CRC observation")
-  expected_keys = {
-    "entry_ctl", "entry_cout", "range_start", "range_end", "adjust_address",
-    "old_adjust_word", "patched_prefix_sw", "new_adjust_word",
-    "original_sw_full", "patched_sw_full", "original_dcra_raw",
-    "patched_dcra_raw", "exit_ctl", "exit_cout", "sram_echo_length",
-    "sram_echo_crc32",
+  checks = _require_object(value, "host checks")
+  expected = {
+    "target_sector_sha256": sha256_bytes(target_sector),
+    "target_sector_crc32": binascii.crc32(target_sector),
+    "crc_sector_crc32": binascii.crc32(crc_sector),
+    "combined_crc32": binascii.crc32(target_sector + crc_sector),
+    "original_adjust_word": target.crc_original_adjust_word,
+    "patched_prefix_sw": target.crc_patched_prefix_sw,
+    "patched_adjust_word": target.crc_patched_adjust_word,
+    "residue": target.crc_residue,
   }
-  _require_exact_keys(record, expected_keys, "CRC observation")
-  if any(type(record[name]) is not int or not 0 <= record[name] <= 0xFFFFFFFF for name in expected_keys):
-    raise EvidenceError("CRC observation values must be unsigned 32-bit integers")
-  if (record["range_start"], record["range_end"], record["adjust_address"]) != (
-    target.crc_range_start, target.crc_range_end, target.crc_adjust_address,
-  ):
-    raise EvidenceError("CRC observation addresses do not match target")
-  old_adjustment = int.from_bytes(
-    crc_sector[target.crc_adjust_offset:target.crc_adjust_offset + 4], "little",
-  )
-  if record["old_adjust_word"] != old_adjustment:
-    raise EvidenceError("CRC observation old adjustment does not match backup")
-  if record["new_adjust_word"] != (record["patched_prefix_sw"] ^ 0xFFFFFFFF):
-    raise EvidenceError("CRC observation adjustment formula is invalid")
-  if (
-    record["original_sw_full"] != record["original_dcra_raw"]
-    or record["patched_sw_full"] != record["patched_dcra_raw"]
-    or record["original_sw_full"] != 0xFFFFFFFF
-    or record["patched_sw_full"] != 0xFFFFFFFF
-  ):
-    raise EvidenceError("CRC/DCRA observation does not satisfy boot residue")
-  if (record["exit_ctl"], record["exit_cout"]) != (
-    record["entry_ctl"], record["entry_cout"],
-  ):
-    raise EvidenceError("DCRA exit state does not match entry state")
-  if (
-    record["sram_echo_length"] != target.sector_length
-    or record["sram_echo_crc32"] != binascii.crc32(target_sector)
-  ):
-    raise EvidenceError("SRAM backup observation does not match target backup")
+  _require_exact_keys(checks, set(expected), "host checks")
+  if checks != expected:
+    raise EvidenceError("host sector or reviewed CRC checks do not match evidence")
+  if checks["patched_prefix_sw"] ^ checks["residue"] != checks["patched_adjust_word"]:
+    raise EvidenceError("host CRC adjustment formula is invalid")
 
 
 def _read_json(path: Path, label: str) -> dict[str, object]:
