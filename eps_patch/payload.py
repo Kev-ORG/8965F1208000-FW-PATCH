@@ -32,18 +32,6 @@ BUILT_PAYLOADS = {
     "size": 2864,
     "sha256": "d3a3cf534930b1b5e58642b3e1bd2aa10f3c9352da9852bd04cc21cdeee6b4a1",
   },
-  "patch": {
-    "size": 4016,
-    "sha256": "24988abf1c11e3f291d70fa020f59683bcc2fa612e6c0c499df028bb30a36280",
-  },
-  "patch_v2": {
-    "size": 4016,
-    "sha256": "06e7f79b84dc8d134c2ee370f7b7baabd5e0615428b783ccaf6f797cf08cb185",
-  },
-  "restore_v1": {
-    "size": 4048,
-    "sha256": "a0ce93d3ef4a5623634211d37a68d751db3620e41bbe3cf0c0fb91df6253c39c",
-  },
   "crc_probe": {
     "size": 2230,
     "sha256": "659c845dcf7c63135d29f556fd41367b5516ca6bf9e2fa06c408bd7cdf905c16",
@@ -51,14 +39,6 @@ BUILT_PAYLOADS = {
   "crc_verify": {
     "size": 1852,
     "sha256": "ea1f7d9f2b08d0d5534a0f8e90e6797455522a2578e0227dc789663d7f794eb7",
-  },
-  "ram_echo": {
-    "size": 1132,
-    "sha256": "9ad4eb4f3e59466e05e3597d733b07dcce8e6e0751a730227f4767a8439f942e",
-  },
-  "restore_sector": {
-    "size": 3936,
-    "sha256": "17f17104af1689a2675488957af3bcf1e96d23d2407a2f0c1ee905c691b23d63",
   },
   "crc_intermediate": {
     "size": 2482,
@@ -76,55 +56,6 @@ BUILT_PAYLOADS = {
 BUILT_PAYLOAD_ENTRYPOINTS = {
   "probe_pe_cycle": "0xfebf0000",
 }
-
-PATCH_CRC_INTENT_MAGIC = 0x43524350
-PATCH_CRC_INTENT_SCHEMA = 1
-PATCH_CRC_INTENT_LENGTH = 0x94
-
-
-@dataclass(frozen=True, slots=True)
-class PatchCrcIntent:
-  target_source_sha256: str
-  target_final_sha256: str
-  crc_source_sha256: str
-  crc_final_sha256: str
-  old_adjustment: bytes
-  new_adjustment: bytes
-
-  @classmethod
-  def from_checkpoint(cls, checkpoint) -> "PatchCrcIntent":
-    candidate = checkpoint.candidate
-    values = tuple(
-      hashlib.sha256(value).hexdigest() for value in (
-        candidate.target_source, candidate.target_final,
-        candidate.crc_source, candidate.crc_final,
-      )
-    )
-    return cls(*values, candidate.old_adjustment, candidate.new_adjustment)
-
-  def to_bytes(self) -> bytes:
-    digests = (
-      self.target_source_sha256, self.target_final_sha256,
-      self.crc_source_sha256, self.crc_final_sha256,
-    )
-    if any(type(value) is not str or len(value) != 64 for value in digests):
-      raise PayloadError("patch-crc intent SHA-256 is malformed")
-    if type(self.old_adjustment) is not bytes or len(self.old_adjustment) != 4:
-      raise PayloadError("patch-crc old adjustment must be four bytes")
-    if type(self.new_adjustment) is not bytes or len(self.new_adjustment) != 4:
-      raise PayloadError("patch-crc new adjustment must be four bytes")
-    try:
-      raw = struct.pack(
-        "<IHH32s32s32s32s4s4sI", PATCH_CRC_INTENT_MAGIC,
-        PATCH_CRC_INTENT_SCHEMA, PATCH_CRC_INTENT_LENGTH,
-        *(bytes.fromhex(value) for value in digests),
-        self.old_adjustment, self.new_adjustment, 0,
-      )
-    except ValueError as exc:
-      raise PayloadError("patch-crc intent SHA-256 is malformed") from exc
-    crc = binascii.crc32(raw)
-    return raw[:-4] + struct.pack("<I", crc)
-
 
 class PayloadError(RuntimeError):
   pass
@@ -175,7 +106,6 @@ class PayloadTemplateManifest:
       "restore_sector": IntentLayout(0x600, 0x80),
       "write_target_candidate": IntentLayout(0x600, 0x80),
       "write_crc_candidate": IntentLayout(0x600, 0x80),
-      "patch_crc": IntentLayout(0x5EC, 0x94),
     }.get(self.name)
     if (
       self.intent != reviewed_layout

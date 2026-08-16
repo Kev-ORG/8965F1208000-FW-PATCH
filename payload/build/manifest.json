@@ -2,13 +2,29 @@
   "toolchain": {"gcc": "13.2.0", "binutils": "2.41"},
   "sources": {
     "probe_pe_cycle.c": "02003bc97351d1a2253e52c7447dacd04dd55d994d2e9dba1bc95e59416b401a",
+    "crc_probe.c": "88874e1ba0654fde04faa3f58ecfb82a382af58b70f28ce3bab9ff33496a0762",
+    "crc_intermediate.c": "c0ecfd66e52ee7f8a4645c5de57e9e8a813da1e829a4088a5cb3e676a7b587d2",
+    "crc_verify.c": "03ee249e92f9604e04f1c40f6eb6b32e7c5a8b707e624ae84c575387c662a010",
+    "write_target_candidate.c": "456bd6d38888c4537254a8e47b57dff9ee511912d1dc9227e6c360922c66a0f9",
+    "write_crc_candidate.c": "f1ce18c44f6230f545a9bfe5ba4e851223fc8f3c98af63d237c0274acf233e0f",
     "common.h": "0ce590efe4cd04f91de77eb599441f4e0c96518a58dd5ab0a394cd54b96768f3",
     "protocol.h": "ee3c925d0a7bfd98078f83a633cdcab05eb4da87b87f71540cd1ea18b1aeda10",
     "dcra.h": "87e0a9a97078b88757543381f954afff6719a30963d0313e5758b7bc6bbfabb6",
+    "patch_common.h": "5a07e7a2c1a7279cc8847487af5e3c551b23df3a9ce95da2cf6b54ff5596c991",
+    "patch_protocol.h": "756bd6b0612c98b604c1530bf47d791c6fea20a43200280f96c66f405d6448c6",
+    "crc_runtime.h": "6d82357db91a364b9cfc9d9fce0421e1daef377fabc1697caf6d257bafd15af5",
+    "candidate_writer.h": "5ffa020850f09c742e850f7c4259f7aa5762610cf7357a7f6fefe198ab3a98bc",
+    "faci_dual.h": "90a3c35e2dbcfd96a7801daa20dfb44821753d2bf55d3684a2fca094dab4ea1e",
     "linker.ld": "7921a5eb2c2ca853e88e505da01dc86bff8779be1678ad85756cabe90f44059a",
-    "build.sh": "43f2010cc0cb13692c7f51def17c2e00c256218a1a6bc0201ce91b84e48fa6e7"
+    "linker_intent.ld": "29c0cc4c8c7a0efc9989b97883cb36986b8f1ffa7dbcfe6249470295dd13366b",
+    "build.sh": "eca85d64e05eea0a41f0f88f0f8f86bca52419ebba8b8da6d691bde4aa222555"
   },
   "payloads": {
-    "probe_pe_cycle": {"size": 2864, "sha256": "d3a3cf534930b1b5e58642b3e1bd2aa10f3c9352da9852bd04cc21cdeee6b4a1", "entrypoint": "0xfebf0000"}
+    "probe_pe_cycle": {"size": 2864, "sha256": "d3a3cf534930b1b5e58642b3e1bd2aa10f3c9352da9852bd04cc21cdeee6b4a1", "entrypoint": "0xfebf0000"},
+    "crc_probe": {"size": 2230, "sha256": "659c845dcf7c63135d29f556fd41367b5516ca6bf9e2fa06c408bd7cdf905c16"},
+    "crc_intermediate": {"size": 2482, "sha256": "c67fd90df1de30a0b90d5fc4bae6366a940989dc94dedcee4080fc384c40ebd7"},
+    "crc_verify": {"size": 1852, "sha256": "ea1f7d9f2b08d0d5534a0f8e90e6797455522a2578e0227dc789663d7f794eb7"},
+    "write_target_candidate": {"size": 3934, "sha256": "d0c600ff4ff266e491ac3a0baf4e77075c1863dc2290ae681a09a5bc1251af26"},
+    "write_crc_candidate": {"size": 3946, "sha256": "3698aca109af9e700b36a8c7fc4c7bacc7ca22acb9a2fa40864f1abd03cd685a"}
   }
 }
