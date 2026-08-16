@@ -1,2 +1,11 @@
 .worktrees/
 .DS_Store
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+/artifacts/
+/payload/build/*
+!/payload/build/
+!/payload/build/*.bin
+!/payload/build/manifest.json

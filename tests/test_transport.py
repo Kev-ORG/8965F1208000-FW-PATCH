@@ -1,0 +1,486 @@
+import hashlib
+import binascii
+import struct
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+class FakePanda:
+  instances = []
+
+  def __init__(self, serial=None):
+    self.serial = serial
+    self.safety = []
+    self.resets = []
+    self.closed = False
+    self.can_batches = []
+    FakePanda.instances.append(self)
+
+  def set_safety_mode(self, mode):
+    self.safety.append(mode)
+
+  def reset(self, *, reconnect):
+    self.resets.append(reconnect)
+
+  def close(self):
+    self.closed = True
+
+  def get_usb_serial(self):
+    return self.serial or "PANDA-DEFAULT"
+
+  def can_recv(self):
+    if self.can_batches:
+      return self.can_batches.pop(0)
+    return []
+
+
+class FakeUds:
+  instances = []
+
+  def __init__(self, panda, tx_addr, rx_addr, bus, *, timeout, response_pending_timeout):
+    self.constructor = (panda, tx_addr, rx_addr, bus, timeout, response_pending_timeout)
+    self.calls = []
+    self.identity_reads = 0
+    self.download_response = b"\x20\x04\x02"
+    FakeUds.instances.append(self)
+
+  def read_data_by_identifier(self, did):
+    self.calls.append(("read", did))
+    assert did == 0xF181
+    entered_programming = ("session", 2) in self.calls
+    return (
+      b"\x02" + (b"!" * 32)
+      if entered_programming else b"\x01" + b"8965B4512000" + bytes(4)
+    )
+
+  def diagnostic_session_control(self, session):
+    self.calls.append(("session", session))
+
+  def security_access(self, access, security_key=b"", data_record=b""):
+    self.calls.append(("security", access, security_key, data_record))
+    if access == 1:
+      return bytes.fromhex("00112233445566778899aabbccddeeff")
+
+  def write_data_by_identifier(self, did, data):
+    self.calls.append(("write", did, data))
+
+  def _uds_request(self, service, *, data):
+    self.calls.append(("private_request", service, data))
+    return self.download_response
+
+  def transfer_data(self, counter, data):
+    self.calls.append(("transfer", counter, data))
+
+  def request_transfer_exit(self):
+    self.calls.append(("exit",))
+
+  def routine_control(self, kind, identifier, data):
+    self.calls.append(("routine", kind, identifier, data))
+    return b""
+
+
+def fake_bindings(isotp_calls):
+  return SimpleNamespace(
+    Panda=FakePanda,
+    UdsClient=FakeUds,
+    elm327=42,
+    session_default=1,
+    session_extended=3,
+    session_programming=2,
+    access_request_seed=1,
+    access_send_key=2,
+    service_request_download=0x34,
+    routine_start=1,
+    did_application=0xF181,
+    isotp_send=lambda *args, **kwargs: isotp_calls.append((args, kwargs)),
+  )
+
+
+@pytest.fixture(autouse=True)
+def clear_fakes(monkeypatch):
+  monkeypatch.setattr("eps_patch.transport.time.sleep", lambda _seconds: None)
+  FakePanda.instances.clear()
+  FakeUds.instances.clear()
+
+
+def test_transport_opens_current_panda_and_uds_shape_and_closes():
+  from eps_patch.transport import EcuTransport
+
+  calls = []
+  with EcuTransport(bindings=fake_bindings(calls), serial="abc") as transport:
+    panda = FakePanda.instances[-1]
+    uds = FakeUds.instances[-1]
+    assert panda.serial == "abc"
+    assert panda.safety == [42]
+    assert uds.constructor[1:] == (0x7A1, 0x7A9, 0, 0.2, 10.0)
+    identity = transport.read_identity()
+    assert identity.part_number == b"8965B4512000"
+    assert identity.panda_serial == "abc"
+    assert identity.boot_software_id == b"\x02" + (b"!" * 32)
+    assert [call for call in uds.calls if call[0] == "read"] == [
+      ("read", 0xF181),
+      ("read", 0xF181),
+    ]
+    assert [call for call in uds.calls if call[0] == "session"] == [
+      ("session", 1), ("session", 3), ("session", 2), ("session", 1), ("session", 3),
+    ]
+  assert panda.closed
+
+
+def test_transport_rejectable_identity_preserves_raw_application_bytes():
+  from eps_patch.transport import EcuTransport
+
+  application = b"\x01" + b"8965B4512000" + bytes(4)
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    reads = iter((application, b"\x01" + b"8965H0000000" + bytes(4)))
+    FakeUds.instances[-1].read_data_by_identifier = lambda _did: next(reads)
+    identity = transport.read_identity()
+
+  assert identity.part_number == b"8965B4512000"
+  assert identity.application_software_id == application
+
+
+def test_read_bootloader_identity_rejects_malformed_f181_without_session_switch():
+  from eps_patch.transport import EcuTransport, TransportError
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    uds = FakeUds.instances[-1]
+    uds.read_data_by_identifier = lambda did: (
+      uds.calls.append(("read", did)) or bytes(32)
+    )
+    with pytest.raises(TransportError, match="exactly 33 bytes"):
+      transport.read_bootloader_identity()
+
+  assert uds.calls == [("read", 0xF181)]
+
+
+def test_read_bootloader_identity_propagates_uds_negative_response():
+  from eps_patch.transport import EcuTransport
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    uds = FakeUds.instances[-1]
+
+    def fail(_did):
+      raise RuntimeError("NRC 0x31")
+
+    uds.read_data_by_identifier = fail
+    with pytest.raises(RuntimeError, match="NRC 0x31"):
+      transport.read_bootloader_identity()
+
+  assert not any(call[0] == "session" for call in uds.calls)
+
+
+def test_transport_uploads_only_hash_checked_envelope_with_private_download():
+  from eps_patch.transport import EcuTransport
+
+  isotp_calls = []
+  envelope = bytes(range(256)) * 16
+  digest = hashlib.sha256(envelope).hexdigest()
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    transport.prepare_and_upload(envelope, expected_sha256=digest, new_uds=True)
+    uds = FakeUds.instances[-1]
+
+  private = [call for call in uds.calls if call[0] == "private_request"]
+  assert private == [(
+    "private_request", 0x34,
+    bytes.fromhex("01 46 01 00 fe bf 00 00 00 00 10 00"),
+  )]
+  transfers = [call for call in uds.calls if call[0] == "transfer"]
+  assert [call[1] for call in transfers] == [1, 2, 3, 4]
+  assert b"".join(call[2] for call in transfers) == envelope
+  assert uds.calls[-1][0] == "routine"
+
+
+def test_transport_honors_negotiated_request_download_block_length():
+  from eps_patch.transport import EcuTransport
+
+  envelope = bytes(range(256)) * 16
+  digest = hashlib.sha256(envelope).hexdigest()
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    FakeUds.instances[-1].download_response = b"\x20\x02\x02"
+    transport.prepare_and_upload(envelope, expected_sha256=digest, new_uds=False)
+    transfers = [call for call in FakeUds.instances[-1].calls if call[0] == "transfer"]
+
+  assert len(transfers) == 8
+  assert all(len(call[2]) == 0x200 for call in transfers)
+
+
+def _download_records(uds):
+  records = []
+  current = None
+@pytest.mark.parametrize("operation,base", ((13, 0xF8000), (14, 0x60000)))
+def test_candidate_writer_trigger_rejects_cross_direction_base(operation, base):
+  from eps_patch.transport import EcuTransport, TransportError
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    with pytest.raises(TransportError, match="fixed direction"):
+      transport.trigger(operation=operation, new_uds=False, sector_base=base)
+
+
+@pytest.mark.parametrize(
+  "address,length",
+  ((0xFEBF1000, 0x8000), (0xFEBF2000, 0x7FFF), (0xFEBF9000, 0x8000)),
+)
+def test_ram_blob_rejects_overlap_or_wrong_length(address, length):
+  from eps_patch.transport import RamBlob, TransportError
+
+  with pytest.raises(TransportError, match="one exact sector"):
+    RamBlob(address, bytes(length)).validate()
+
+
+@pytest.mark.parametrize("operation", (1, 8, 10, 11, 255))
+def test_staged_upload_rejects_unsupported_operation_before_uds(operation):
+  from eps_patch.transport import EcuTransport, RamBlob, TransportError
+
+  envelope = bytes(0x1000)
+  image = SimpleNamespace(
+    name="crc_probe",
+    envelope=envelope,
+    sha256=hashlib.sha256(envelope).hexdigest(),
+    validate=lambda *, target: None,
+  )
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    with pytest.raises(TransportError, match="unsupported staged operation"):
+      transport.run_staged_payload(
+        image,
+        ram_blob=RamBlob(0xFEBF2000, bytes(0x8000)),
+        operation=operation,
+        new_uds=False,
+      )
+    assert FakeUds.instances[-1].calls == []
+
+
+def test_staged_upload_rejects_self_consistent_unpinned_envelope_before_uds():
+  from eps_patch.protocol import OP_CRC_PROBE
+  from eps_patch.transport import EcuTransport, RamBlob, TransportError
+
+  envelope = bytes(0x1000)
+  image = SimpleNamespace(
+    name="crc_probe",
+    envelope=envelope,
+    sha256=hashlib.sha256(envelope).hexdigest(),
+  )
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    with pytest.raises(TransportError, match="exact envelope pin"):
+      transport.run_staged_payload(
+        image,
+        ram_blob=RamBlob(0xFEBF2000, bytes(0x8000)),
+        operation=OP_CRC_PROBE,
+        new_uds=False,
+      )
+    assert FakeUds.instances[-1].calls == []
+@pytest.mark.parametrize("response", [b"", b"\x10\x04", b"\x21\x04\x02", b"\x20\x00\x01"])
+def test_transport_rejects_malformed_request_download_response(response):
+  from eps_patch.transport import EcuTransport, TransportError
+
+  envelope = bytes(0x1000)
+  digest = hashlib.sha256(envelope).hexdigest()
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    FakeUds.instances[-1].download_response = response
+    with pytest.raises(TransportError, match="RequestDownload"):
+      transport.prepare_and_upload(envelope, expected_sha256=digest, new_uds=False)
+    assert not any(call[0] == "transfer" for call in FakeUds.instances[-1].calls)
+
+
+def test_transport_rejects_payload_before_programming_when_hash_is_wrong():
+  from eps_patch.transport import EcuTransport, TransportError
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    with pytest.raises(TransportError, match="SHA-256"):
+      transport.prepare_and_upload(bytes(0x1000), expected_sha256="0" * 64, new_uds=True)
+    assert FakeUds.instances[-1].calls == []
+
+
+def test_transport_formats_current_isotp_trigger_call():
+  from eps_patch.transport import EcuTransport
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    transport.trigger(operation=1, new_uds=True)
+
+  args, kwargs = isotp_calls[0]
+  assert args[1] == bytes.fromhex("31 01 ff 00 45 01 00 06 00 00 00 00 80 00")
+  assert args[2] == 0x7A1
+  assert kwargs == {"bus": 0, "recvaddr": 0x7A9}
+
+
+def test_transport_accepts_pe_cycle_operation_for_the_same_target_route():
+  from eps_patch.protocol import OP_FACI_PE_CYCLE
+  from eps_patch.transport import EcuTransport
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    transport.trigger(operation=OP_FACI_PE_CYCLE, new_uds=False)
+  assert isotp_calls[0][0][1] == bytes.fromhex(
+    "31 01 ff 00 45 00 00 06 00 00 00 00 80 00"
+  )
+
+
+def test_transport_accepts_patch_v2_operation_for_the_same_target_route():
+  from eps_patch.protocol import OP_PATCH_V2
+  from eps_patch.transport import EcuTransport
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    transport.trigger(operation=OP_PATCH_V2, new_uds=False)
+  assert isotp_calls[0][0][1] == bytes.fromhex(
+    "31 01 ff 00 45 00 00 06 00 00 00 00 80 00"
+  )
+
+
+def test_transport_accepts_restore_operation_for_the_same_target_route():
+  from eps_patch.protocol import OP_RESTORE
+  from eps_patch.transport import EcuTransport
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    transport.trigger(operation=OP_RESTORE, new_uds=False)
+  assert isotp_calls[0][0][1] == bytes.fromhex(
+    "31 01 ff 00 45 00 00 06 00 00 00 00 80 00"
+  )
+
+
+@pytest.mark.parametrize("operation", (7, 8, 9, 10, 11))
+def test_transport_accepts_crc_operation_ids_for_the_same_target_route(operation):
+  from eps_patch.transport import EcuTransport
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    transport.trigger(operation=operation, new_uds=False)
+
+  assert isotp_calls[0][0][1] == bytes.fromhex(
+    "31 01 ff 00 45 00 00 06 00 00 00 00 80 00"
+  )
+
+
+def test_transport_security_access_uses_distinct_seed_key_secret():
+  from eps_patch.transport import EcuTransport
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    transport.enter_programming_and_unlock(new_uds=True)
+    security_calls = [call for call in FakeUds.instances[-1].calls if call[0] == "security"]
+
+  assert security_calls[0] == ("security", 1, b"", bytes(16))
+  assert security_calls[1][0:2] == ("security", 2)
+  assert security_calls[1][2].hex() == "9d7b16ff9c7bb92ba0890a6766a93cd8"
+
+
+def test_old_uds_session_order_is_preserved_with_exact_settling_delays():
+  from eps_patch.transport import EcuTransport
+
+  events = []
+  with EcuTransport(bindings=fake_bindings([]), sleeper=lambda seconds: events.append(("sleep", seconds))) as transport:
+    uds = FakeUds.instances[-1]
+    uds.diagnostic_session_control = lambda session: events.append(("session", session))
+    transport.enter_programming_and_unlock(new_uds=False)
+
+  assert events == [
+    ("session", 1), ("sleep", 0.5),
+    ("session", 3), ("sleep", 0.7),
+    ("session", 2), ("sleep", 1.0),
+    ("session", 1), ("sleep", 0.5),
+    ("session", 3), ("sleep", 0.7),
+    ("session", 2), ("sleep", 1.0),
+  ]
+
+
+def test_failed_session_transition_is_not_slept_or_retried():
+  from eps_patch.transport import EcuTransport
+
+  events = []
+  with EcuTransport(bindings=fake_bindings([]), sleeper=lambda seconds: events.append(("sleep", seconds))) as transport:
+    uds = FakeUds.instances[-1]
+
+    def fail(session):
+      events.append(("session", session))
+      raise RuntimeError("transition failed")
+
+    uds.diagnostic_session_control = fail
+    with pytest.raises(RuntimeError, match="transition failed"):
+      transport.enter_programming_and_unlock(new_uds=False)
+
+  assert events == [("session", 1)]
+
+
+def test_transport_collects_only_target_frames_into_strict_stream():
+  from eps_patch.protocol import FACI_DIAGNOSTICS, FrameType, OP_PROBE, PROTOCOL_VERSION
+  from eps_patch.transport import EcuTransport
+
+  sector = bytes(0x8000)
+  frames = [
+    bytes([FrameType.BEGIN0, PROTOCOL_VERSION, OP_PROBE, 0]) + struct.pack("<I", 0x60000),
+    bytes([FrameType.BEGIN1, PROTOCOL_VERSION, OP_PROBE, 1]) + struct.pack("<I", len(sector)),
+  ]
+  frames.extend(
+    bytes([FrameType.DATA]) + struct.pack("<H", index) + b"\x00" + sector[index * 4:index * 4 + 4]
+    for index in range(0x2000)
+  )
+  frames.extend([
+    bytes([FrameType.MAGIC, 0, 0, 0]) + struct.pack("<I", 0x5AA5A55A),
+    bytes([FrameType.MAGIC, 1, 0, 0]) + struct.pack("<I", 0x5AA5A55A),
+  ])
+  faci_values = (0x80, 0x8000, 0, 0, 0, 0x3B00, 0, 0)
+  frames.extend(
+    bytes([FrameType.DIAGNOSTIC, slot, width, 0]) + struct.pack("<I", value)
+    for slot, ((_, _, width), value) in enumerate(zip(FACI_DIAGNOSTICS, faci_values))
+  )
+  frames.extend([
+    bytes([FrameType.STATUS, 1, 0, 0]) + bytes(4),
+    bytes([FrameType.END, 0, 0, 0]) + struct.pack("<I", binascii.crc32(sector)),
+  ])
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    FakePanda.instances[-1].can_batches = [[(0x123, b"noise", 0)]] + [
+      [(0x7A9, frame, 0) for frame in frames]
+    ]
+    result = transport.collect_stream(operation=OP_PROBE, timeout=1.0)
+
+  assert result.sector == sector
+  assert result.statuses == ((1, 0),)
+  assert result.faci_values == faci_values
+
+
+def test_transport_collects_ram_echo_as_one_exact_sram_region():
+  from eps_patch.protocol import FrameType, OP_RAM_ECHO, PROTOCOL_VERSION
+  from eps_patch.transport import EcuTransport
+
+  sector = bytes((index * 17) & 0xFF for index in range(0x8000))
+  frames = [
+    bytes([FrameType.BEGIN0, PROTOCOL_VERSION, OP_RAM_ECHO, 0])
+    + struct.pack("<I", 0xFEBF2000),
+    bytes([FrameType.BEGIN1, PROTOCOL_VERSION, OP_RAM_ECHO, 1])
+    + struct.pack("<I", len(sector)),
+  ]
+  frames.extend(
+    bytes([FrameType.DATA]) + struct.pack("<H", index) + b"\x00"
+    + sector[index * 4:index * 4 + 4]
+    for index in range(0x2000)
+  )
+  frames.extend((
+    bytes([FrameType.MAGIC, 0, 0, 0]) + struct.pack("<I", 0x5AA5A55A),
+    bytes([FrameType.MAGIC, 1, 0, 0]) + struct.pack("<I", 0x5AA5A55A),
+    bytes([FrameType.STATUS, 1, 0, 0]) + bytes(4),
+    bytes([FrameType.END, 0, 0, 0]) + struct.pack("<I", binascii.crc32(sector)),
+  ))
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    FakePanda.instances[-1].can_batches = [
+      [(0x7A9, frame, 0) for frame in frames]
+    ]
+    result = transport.collect_stream(operation=OP_RAM_ECHO, timeout=1.0)
+
+  assert result.operation == OP_RAM_ECHO
+  assert result.sector == sector
+  assert result.statuses == ((1, 0),)
+
+
+def test_transport_converts_payload_protocol_errors_to_transport_errors():
+  from eps_patch.protocol import OP_PROBE
+  from eps_patch.transport import EcuTransport, TransportError
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    FakePanda.instances[-1].can_batches = [[(0x7A9, bytes(8), 0)]]
+    with pytest.raises(TransportError, match="payload stream"):
+      transport.collect_stream(operation=OP_PROBE, timeout=0.1)
