@@ -1,0 +1,14 @@
+{
+  "toolchain": {"gcc": "13.2.0", "binutils": "2.41"},
+  "sources": {
+    "probe_pe_cycle.c": "6c6b4e0446dae24bf924dd8f85f326fc6ad4db46a4926a6488aef8352557a87a",
+    "common.h": "0ce590efe4cd04f91de77eb599441f4e0c96518a58dd5ab0a394cd54b96768f3",
+    "protocol.h": "bb0a2ce1291ee9d0ec0b67e05901d929c8eb03b39d6b513de0432b7a5c809b65",
+    "dcra.h": "57ed89185ba840c1a0421d58c892b723c9ca77d736a031900bba1c0fa2efc1ea",
+    "linker.ld": "7921a5eb2c2ca853e88e505da01dc86bff8779be1678ad85756cabe90f44059a",
+    "build.sh": "43f2010cc0cb13692c7f51def17c2e00c256218a1a6bc0201ce91b84e48fa6e7"
+  },
+  "payloads": {
+    "probe_pe_cycle": {"size": 3628, "sha256": "c87c72c17764ee885cf3534743567d7adc0a50f387c42315a0dd02fd94c8aef0", "entrypoint": "0xfebf0000"}
+  }
+}

@@ -25,21 +25,13 @@ AUTHENTICATOR_OFFSET = 0xFF0
 SHELLCODE_LIMIT = JUMP_ADDRESS_OFFSET
 PLAINTEXT_BODY_LENGTH = AUTHENTICATOR_OFFSET
 BUILT_PAYLOADS = {
-  "probe": {
-    "size": 1388,
-    "sha256": "134ac682364037f4e704cdba55e0e5a3bcc323bd7706432beaa1db230fd321d3",
+  "probe_pe_cycle": {
+    "size": 3628,
+    "sha256": "c87c72c17764ee885cf3534743567d7adc0a50f387c42315a0dd02fd94c8aef0",
   },
   "patch": {
     "size": 4016,
     "sha256": "24988abf1c11e3f291d70fa020f59683bcc2fa612e6c0c499df028bb30a36280",
-  },
-  "probe_unlock": {
-    "size": 2816,
-    "sha256": "cd8ce6b4f1ada2239045ab1ddf69bb07bd517833048dc739e4715f0d0fbd72e2",
-  },
-  "probe_pe_cycle": {
-    "size": 3544,
-    "sha256": "f4e227cad151b17820168b883bd0f0250b607f4b78aad5034d065adac4acb73f",
   },
   "patch_v2": {
     "size": 4016,

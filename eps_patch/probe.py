@@ -1,0 +1,289 @@
+"""One fail-closed comprehensive read-only probe workflow."""
+
+from __future__ import annotations
+
+import binascii
+import hashlib
+from dataclasses import dataclass, fields
+from pathlib import Path
+from typing import Callable, Protocol
+
+from .artifacts import sha256_bytes
+from .evidence import install_probe_pass
+from .manifest import TARGET, TargetManifest
+from .paths import ArtifactLayout
+from .protocol import (
+  CrcObservation,
+  FACI_DIAGNOSTICS,
+  FACI_PE_CYCLE_DIAGNOSTICS,
+  OP_FACI_PE_CYCLE,
+  RegionResult,
+  StreamResult,
+)
+from .transport import EcuIdentity
+
+
+class ProbeError(RuntimeError):
+  pass
+
+
+@dataclass(frozen=True, slots=True)
+class PayloadImage:
+  name: str
+  envelope: bytes
+  sha256: str
+
+  def validate(self, target: TargetManifest = TARGET) -> None:
+    if self.name != "probe_pe_cycle":
+      raise ProbeError("probe payload name is not the comprehensive P/E-cycle payload")
+    if type(self.envelope) is not bytes or len(self.envelope) != target.envelope_length:
+      raise ProbeError("probe payload envelope does not match the target allocation")
+    if (
+      type(self.sha256) is not str
+      or self.sha256 != hashlib.sha256(self.envelope).hexdigest()
+    ):
+      raise ProbeError("probe payload SHA-256 mismatch")
+
+
+class ProbeTransport(Protocol):
+  def __enter__(self) -> "ProbeTransport": ...
+  def __exit__(self, exc_type, exc, traceback) -> None: ...
+  def read_identity(self) -> EcuIdentity: ...
+  def run_payload(
+    self, image: PayloadImage, *, operation: int, new_uds: bool,
+  ) -> StreamResult: ...
+
+
+TransportFactory = Callable[[], ProbeTransport]
+Preflight = Callable[[], object]
+
+_CHECKPOINTS = ("PRE", "UNLOCKED", "WINDOWS", "CONFIGURED", "RESTORED")
+_REGISTERS = tuple(name for name, _address, _width in FACI_DIAGNOSTICS)
+_PRE = (0x80, 0x8000, 0, 0, 0, 0, 0, 0)
+_EXPECTED_SNAPSHOTS = (
+  _PRE,
+  _PRE[:3] + (1,) + _PRE[4:],
+  _PRE[:3] + (1,) + _PRE[4:6] + (1, 1),
+  _PRE[:3] + (1, 1, 0x3B00, 1, 1),
+  _PRE,
+)
+
+
+def run_probe(
+  *,
+  layout: ArtifactLayout,
+  payload: PayloadImage,
+  preflight: Preflight,
+  transport_factory: TransportFactory,
+  target: TargetManifest = TARGET,
+  new_uds: bool,
+) -> Path:
+  """Run exactly one comprehensive payload and install evidence only on PASS."""
+  if not isinstance(layout, ArtifactLayout):
+    raise TypeError("layout must be an ArtifactLayout")
+  if type(payload) is not PayloadImage:
+    raise TypeError("payload must be a PayloadImage")
+  if not callable(preflight) or not callable(transport_factory):
+    raise TypeError("preflight and transport_factory must be callable")
+  if not isinstance(target, TargetManifest):
+    raise TypeError("target must be a TargetManifest")
+  try:
+    target.validate()
+  except ValueError as exc:
+    raise ProbeError(f"target manifest is invalid: {exc}") from exc
+  if type(new_uds) is not bool or new_uds is not target.new_uds:
+    raise ProbeError("probe UDS variant does not match the target")
+  payload.validate(target)
+
+  preflight()
+  with transport_factory() as transport:
+    identity = transport.read_identity()
+    _validate_identity(identity, target)
+    result = transport.run_payload(
+      payload, operation=OP_FACI_PE_CYCLE, new_uds=new_uds,
+    )
+
+  target_sector, crc_sector, observation, snapshots, primary, cleanup = (
+    _validate_result(result, target)
+  )
+  identity_record = _identity_record(identity)
+  target_descriptor = _descriptor(target.sector_base, target_sector)
+  crc_descriptor = _descriptor(target.crc_sector_base, crc_sector)
+  report: dict[str, object] = {
+    "workflow": "faci-pe-cycle",
+    "result": "PASS",
+    "identity": identity_record,
+    "new_uds": new_uds,
+    "sectors": {"target": target_descriptor, "crc": crc_descriptor},
+    "instruction": {
+      "address": target.instruction_address,
+      "original": target.original_instruction.hex(),
+    },
+    "snapshots": snapshots,
+    "crc": _crc_record(observation),
+    "outcome": {"primary_code": primary, "cleanup_code": cleanup},
+    "validation_errors": [],
+  }
+  metadata: dict[str, object] = {
+    "identity": identity_record,
+    "target_backup": target_descriptor,
+    "crc_backup": crc_descriptor,
+  }
+  return install_probe_pass(layout, target_sector, crc_sector, report, metadata)
+
+
+def _validate_identity(identity: object, target: TargetManifest) -> None:
+  if type(identity) is not EcuIdentity:
+    raise ProbeError("ECU identity has the wrong concrete type")
+  if (
+    identity.part_number != target.part_number
+    or identity.application_software_id != target.application_software_id
+    or identity.boot_software_id != target.boot_software_id
+    or type(identity.panda_serial) is not str
+    or not identity.panda_serial
+  ):
+    raise ProbeError("ECU identity does not exactly match the target")
+
+
+def _validate_result(
+  result: object, target: TargetManifest,
+) -> tuple[bytes, bytes, CrcObservation, dict[str, dict[str, int]], int, int]:
+  if type(result) is not StreamResult:
+    raise ProbeError("probe stream result has the wrong concrete type")
+  if result.operation != OP_FACI_PE_CYCLE:
+    raise ProbeError("probe stream returned the wrong operation")
+  if result.sector is not None:
+    raise ProbeError("probe stream exposed a forbidden legacy single-sector field")
+  if result.magic_words != (target.magic_word, target.magic_word):
+    raise ProbeError("probe boot magic words do not match the target")
+  if type(result.statuses) is not tuple or len(result.statuses) != 1:
+    raise ProbeError("probe outcome status is incomplete")
+  status = result.statuses[0]
+  if type(status) is not tuple or len(status) != 2 or status[0] != 1:
+    raise ProbeError("probe outcome status is malformed")
+  raw_status = _u32(status[1], "outcome status")
+  primary = raw_status & 0xFFFF
+  cleanup = (raw_status >> 16) & 0xFFFF
+  if primary != 0 or cleanup != 0:
+    raise ProbeError(
+      f"probe outcome is not PASS: primary={primary}, cleanup={cleanup}"
+    )
+
+  if type(result.regions) is not tuple or len(result.regions) != 2:
+    raise ProbeError("probe must return exactly two full sectors")
+  regions: list[bytes] = []
+  for index, (region, base) in enumerate(zip(
+    result.regions, (target.sector_base, target.crc_sector_base),
+  )):
+    if type(region) is not RegionResult or region.base != base:
+      label = "target" if index == 0 else "CRC"
+      raise ProbeError(f"probe {label} sector has the wrong address")
+    if type(region.data) is not bytes or len(region.data) != target.sector_length:
+      label = "target" if index == 0 else "CRC"
+      raise ProbeError(f"probe {label} sector has the wrong length")
+    regions.append(region.data)
+  target_sector, crc_sector = regions
+  if sha256_bytes(target_sector) != target.original_sha256:
+    raise ProbeError("probe target sector is not the exact reviewed original")
+  instruction = target_sector[
+    target.instruction_offset:target.instruction_offset + len(target.original_instruction)
+  ]
+  if instruction != target.original_instruction:
+    raise ProbeError("probe target sector has the wrong original instruction context")
+  magic_offset = target.magic_addresses[1] - target.crc_sector_base
+  if crc_sector[magic_offset:magic_offset + 4] != target.magic_word.to_bytes(4, "little"):
+    raise ProbeError("probe CRC sector contains the wrong boot magic")
+
+  snapshots = _validate_diagnostics(result.faci_values)
+  observation = _validate_crc(result, target_sector, crc_sector, target)
+  return target_sector, crc_sector, observation, snapshots, primary, cleanup
+
+
+def _validate_diagnostics(values: object) -> dict[str, dict[str, int]]:
+  if type(values) is not tuple or len(values) != len(FACI_PE_CYCLE_DIAGNOSTICS):
+    raise ProbeError("probe FACI diagnostic sequence is incomplete")
+  snapshots: dict[str, dict[str, int]] = {}
+  for checkpoint_index, (checkpoint, expected) in enumerate(
+    zip(_CHECKPOINTS, _EXPECTED_SNAPSHOTS),
+  ):
+    start = checkpoint_index * len(_REGISTERS)
+    raw = values[start:start + len(_REGISTERS)]
+    if any(type(value) is not int for value in raw):
+      raise ProbeError(f"probe {checkpoint} FACI diagnostic has a non-integer value")
+    if tuple(raw) != expected:
+      raise ProbeError(f"probe {checkpoint} FACI diagnostic does not match the reviewed state")
+    snapshots[checkpoint] = dict(zip(_REGISTERS, raw))
+  if tuple(values[-len(_REGISTERS):]) != tuple(values[:len(_REGISTERS)]):
+    raise ProbeError("probe RESTORED FACI state does not exactly match PRE")
+  return snapshots
+
+
+def _validate_crc(
+  result: StreamResult,
+  target_sector: bytes,
+  crc_sector: bytes,
+  target: TargetManifest,
+) -> CrcObservation:
+  observation = result.crc
+  if type(observation) is not CrcObservation:
+    raise ProbeError("probe CRC observation is missing")
+  values = tuple(_u32(getattr(observation, field.name), field.name) for field in fields(CrcObservation))
+  if type(result.crc_values) is not tuple or tuple(result.crc_values) != values:
+    raise ProbeError("probe CRC observation records are incomplete or contradictory")
+  if (observation.range_start, observation.range_end) != (
+    target.crc_range_start, target.crc_range_end,
+  ):
+    raise ProbeError("probe CRC observation range does not match the target")
+  if observation.adjust_address != target.crc_adjust_address:
+    raise ProbeError("probe CRC observation adjustment address does not match the target")
+  live_adjustment = int.from_bytes(
+    crc_sector[target.crc_adjust_offset:target.crc_adjust_offset + 4], "little",
+  )
+  if observation.old_adjust_word != live_adjustment:
+    raise ProbeError("probe CRC sector disagrees with its CRC observation")
+  if observation.new_adjust_word != (observation.patched_prefix_sw ^ 0xFFFFFFFF):
+    raise ProbeError("probe CRC adjustment does not match the reviewed residue formula")
+  if (
+    observation.original_sw_full != observation.original_dcra_raw
+    or observation.patched_sw_full != observation.patched_dcra_raw
+    or observation.original_sw_full != 0xFFFFFFFF
+    or observation.patched_sw_full != 0xFFFFFFFF
+  ):
+    raise ProbeError("probe CRC/DCRA evidence does not satisfy the boot predicate")
+  if (observation.exit_ctl, observation.exit_cout) != (
+    observation.entry_ctl, observation.entry_cout,
+  ):
+    raise ProbeError("probe DCRA state was not exactly restored")
+  if (
+    observation.sram_echo_length != target.sector_length
+    or observation.sram_echo_crc32 != binascii.crc32(target_sector)
+  ):
+    raise ProbeError("probe SRAM backup evidence does not match the target sector")
+  return observation
+
+
+def _u32(value: object, label: str) -> int:
+  if type(value) is not int or not 0 <= value <= 0xFFFFFFFF:
+    raise ProbeError(f"probe {label} is not one unsigned 32-bit value")
+  return value
+
+
+def _identity_record(identity: EcuIdentity) -> dict[str, str]:
+  try:
+    part_number = identity.part_number.decode("ascii", errors="strict")
+  except UnicodeDecodeError as exc:
+    raise ProbeError("ECU identity part number is not ASCII") from exc
+  return {
+    "part_number": part_number,
+    "application_software_id": identity.application_software_id.hex(),
+    "boot_software_id": identity.boot_software_id.hex(),
+    "panda_serial": identity.panda_serial,
+  }
+
+
+def _descriptor(address: int, data: bytes) -> dict[str, object]:
+  return {"address": address, "length": len(data), "sha256": sha256_bytes(data)}
+
+
+def _crc_record(observation: CrcObservation) -> dict[str, int]:
+  return {field.name: getattr(observation, field.name) for field in fields(CrcObservation)}

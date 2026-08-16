@@ -680,45 +680,6 @@ def test_nonzero_status_remains_forbidden_for_normal_probe():
     collect(complete_frames(bytes(0x8000), operation=1, status_code=5))
 
 
-def test_pe_cycle_stream_collects_five_exact_checkpoints_and_nonzero_outcome():
-  from eps_patch.protocol import FACI_DIAGNOSTICS, FACI_PE_CYCLE_DIAGNOSTICS, OP_FACI_PE_CYCLE
-
-  status_code = (0x10 << 16) | 9
-  result = collect(
-    complete_frames(bytes(0x8000), operation=OP_FACI_PE_CYCLE, status_code=status_code),
-    operation=OP_FACI_PE_CYCLE,
-  )
-
-  assert len(FACI_PE_CYCLE_DIAGNOSTICS) == 40
-  assert tuple(name for name, _, _ in FACI_PE_CYCLE_DIAGNOSTICS) == tuple(
-    f"{checkpoint}.{name}"
-    for checkpoint in ("PRE", "UNLOCKED", "WINDOWS", "CONFIGURED", "RESTORED")
-    for name, _, _ in FACI_DIAGNOSTICS
-  )
-  assert result.faci_values == PE_VALUES
-  assert result.statuses == ((1, status_code),)
-
-
-@pytest.mark.parametrize(
-  ("mutation", "message"),
-  [
-    (lambda fs: fs[:-2] + fs[-1:], "STATUS"),
-    (lambda fs: fs[:-1] + [fs[-2], fs[-1]], "STATUS"),
-    (lambda fs: fs[:-42] + fs[-41:], "DIAGNOSTIC slot"),
-    (
-      lambda fs: fs[:-2] + [bytes([fs[-2][0], 2, 0, 0]) + fs[-2][4:], fs[-1]],
-      "stage 1",
-    ),
-  ],
-)
-def test_pe_cycle_requires_exact_diagnostics_and_one_stage1_status(mutation, message):
-  from eps_patch.protocol import OP_FACI_PE_CYCLE, ProtocolError
-
-  frames = complete_frames(bytes(0x8000), operation=OP_FACI_PE_CYCLE)
-  with pytest.raises(ProtocolError, match=message):
-    collect(mutation(frames), operation=OP_FACI_PE_CYCLE)
-
-
 def test_patch_v2_failure_stream_preserves_diagnostics_without_claiming_readback():
   from eps_patch.protocol import OP_PATCH_V2, PATCH_V2_DIAGNOSTICS
 

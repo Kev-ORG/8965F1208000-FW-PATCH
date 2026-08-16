@@ -146,7 +146,8 @@ class StreamCollector:
     if type(expected_operation) is not int:
       raise ProtocolError("expected operation must be an exact integer")
     if cls is StreamCollector and expected_operation in (
-      OP_CRC_PROBE, OP_VERIFY_CRC, OP_PATCH_CRC, OP_CRC_INTERMEDIATE,
+      OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_VERIFY_CRC, OP_PATCH_CRC,
+      OP_CRC_INTERMEDIATE,
     ):
       return CrcStreamCollector(expected_operation=expected_operation)
     if cls is StreamCollector and expected_operation == OP_RESTORE_SECTOR:
@@ -405,7 +406,8 @@ class CrcStreamCollector:
 
   def __init__(self, *, expected_operation: int):
     if type(expected_operation) is not int or expected_operation not in (
-      OP_CRC_PROBE, OP_VERIFY_CRC, OP_PATCH_CRC, OP_CRC_INTERMEDIATE,
+      OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_VERIFY_CRC, OP_PATCH_CRC,
+      OP_CRC_INTERMEDIATE,
     ):
       raise ProtocolError("unknown CRC stream operation")
     self._expected_operation = expected_operation
@@ -416,6 +418,7 @@ class CrcStreamCollector:
     self._regions: list[RegionResult] = []
     self._crc_values: list[int] = []
     self._magic: list[int] = []
+    self._faci_values: list[int] = []
     self._statuses: list[tuple[int, int]] = []
     self._finished = False
 
@@ -515,6 +518,22 @@ class CrcStreamCollector:
         raise ProtocolError("CRC intermediate MAGIC value does not match target")
       self._magic.append(value)
       if len(self._magic) == 2:
+        self._state = (
+          "DIAGNOSTIC" if self._expected_operation == OP_FACI_PE_CYCLE else "STATUS"
+        )
+      return
+    if self._state == "DIAGNOSTIC":
+      if frame_type is not FrameType.DIAGNOSTIC:
+        raise ProtocolError("expected DIAGNOSTIC")
+      slot = data[1]
+      if slot != len(self._faci_values) or slot >= len(FACI_PE_CYCLE_DIAGNOSTICS):
+        raise ProtocolError("invalid or out-of-sequence FACI DIAGNOSTIC slot")
+      width = FACI_PE_CYCLE_DIAGNOSTICS[slot][2]
+      value = struct.unpack_from("<I", data, 4)[0]
+      if data[2] != width or data[3] != 0 or value >= (1 << (width * 8)):
+        raise ProtocolError("FACI DIAGNOSTIC width, padding, or value is invalid")
+      self._faci_values.append(value)
+      if len(self._faci_values) == len(FACI_PE_CYCLE_DIAGNOSTICS):
         self._state = "STATUS"
       return
     if self._state == "STATUS":
@@ -526,7 +545,7 @@ class CrcStreamCollector:
       status_count = len(PATCH_CRC_STAGES) if self._expected_operation == OP_PATCH_CRC else 1
       if data[2:4] != b"\x00\x00" or stage != expected_stage or stage > status_count:
         raise ProtocolError("CRC stream STATUS is out of sequence")
-      if self._expected_operation != OP_PATCH_CRC and code != 0:
+      if self._expected_operation not in (OP_PATCH_CRC, OP_FACI_PE_CYCLE) and code != 0:
         raise ProtocolError("CRC stream requires zero STATUS at stage 1")
       self._statuses.append((stage, code))
       if len(self._statuses) == status_count:
@@ -572,6 +591,7 @@ class CrcStreamCollector:
       sector=None,
       magic_words=(self._magic[0], self._magic[1]),
       statuses=tuple(self._statuses),
+      faci_values=tuple(self._faci_values),
       regions=tuple(self._regions),
       crc_values=values,
       crc=CrcObservation.from_values(values),

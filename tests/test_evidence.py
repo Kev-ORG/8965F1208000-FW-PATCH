@@ -48,6 +48,10 @@ def identity() -> dict[str, str]:
 
 
 def make_report(target_sector: bytes, crc_sector: bytes) -> dict[str, object]:
+  old_adjustment = int.from_bytes(
+    crc_sector[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4], "little",
+  )
+  patched_prefix = 0x12345678
   return {
     "workflow": "faci-pe-cycle",
     "result": "PASS",
@@ -62,6 +66,24 @@ def make_report(target_sector: bytes, crc_sector: bytes) -> dict[str, object]:
       "original": TARGET.original_instruction.hex(),
     },
     "snapshots": copy.deepcopy(SNAPSHOTS),
+    "crc": {
+      "entry_ctl": 0x10203040,
+      "entry_cout": 0x50607080,
+      "range_start": TARGET.crc_range_start,
+      "range_end": TARGET.crc_range_end,
+      "adjust_address": TARGET.crc_adjust_address,
+      "old_adjust_word": old_adjustment,
+      "patched_prefix_sw": patched_prefix,
+      "new_adjust_word": patched_prefix ^ 0xFFFFFFFF,
+      "original_sw_full": 0xFFFFFFFF,
+      "patched_sw_full": 0xFFFFFFFF,
+      "original_dcra_raw": 0xFFFFFFFF,
+      "patched_dcra_raw": 0xFFFFFFFF,
+      "exit_ctl": 0x10203040,
+      "exit_cout": 0x50607080,
+      "sram_echo_length": TARGET.sector_length,
+      "sram_echo_crc32": __import__("binascii").crc32(target_sector),
+    },
     "outcome": {"primary_code": 0, "cleanup_code": 0},
     "validation_errors": [],
   }
@@ -153,6 +175,8 @@ def test_semantic_loader_accepts_complete_pass_without_fixed_report_digest(valid
     lambda report, metadata, target, crc: report["sectors"]["crc"].update(length=TARGET.sector_length - 1),
     lambda report, metadata, target, crc: report["snapshots"]["PRE"].update(FPMON=0),
     lambda report, metadata, target, crc: report["outcome"].update(primary_code=1),
+    lambda report, metadata, target, crc: report["crc"].update(exit_ctl=1),
+    lambda report, metadata, target, crc: report["crc"].update(original_dcra_raw=0),
   ],
 )
 def test_semantic_loader_rejects_non_pass_or_mismatched_evidence(valid_probe, mutation):

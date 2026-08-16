@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import binascii
 import errno
 import json
 import os
@@ -102,7 +103,7 @@ def load_probe_pass(layout: ArtifactLayout, target: TargetManifest) -> TrustedPr
 
   _require_exact_keys(
     report,
-    {"workflow", "result", "identity", "new_uds", "sectors", "instruction", "snapshots", "outcome", "validation_errors"},
+    {"workflow", "result", "identity", "new_uds", "sectors", "instruction", "snapshots", "crc", "outcome", "validation_errors"},
     "probe report",
   )
   if report["workflow"] != "faci-pe-cycle" or report["result"] != "PASS":
@@ -115,6 +116,7 @@ def load_probe_pass(layout: ArtifactLayout, target: TargetManifest) -> TrustedPr
   _validate_descriptor(report["sectors"], "crc", target.crc_sector_base, crc_sector)
   _validate_instruction(report["instruction"], target, target_sector)
   _validate_snapshots(report["snapshots"])
+  _validate_crc(report["crc"], target_sector, crc_sector, target)
   _validate_outcome(report["outcome"], report["validation_errors"])
   _validate_metadata(metadata, report["identity"], report["sectors"])
 
@@ -216,6 +218,52 @@ def _validate_outcome(outcome: object, validation_errors: object) -> None:
     raise EvidenceError("probe outcome or cleanup is nonzero")
   if type(validation_errors) is not list or validation_errors:
     raise EvidenceError("probe report has validation errors")
+
+
+def _validate_crc(
+  value: object,
+  target_sector: bytes,
+  crc_sector: bytes,
+  target: TargetManifest,
+) -> None:
+  record = _require_object(value, "CRC observation")
+  expected_keys = {
+    "entry_ctl", "entry_cout", "range_start", "range_end", "adjust_address",
+    "old_adjust_word", "patched_prefix_sw", "new_adjust_word",
+    "original_sw_full", "patched_sw_full", "original_dcra_raw",
+    "patched_dcra_raw", "exit_ctl", "exit_cout", "sram_echo_length",
+    "sram_echo_crc32",
+  }
+  _require_exact_keys(record, expected_keys, "CRC observation")
+  if any(type(record[name]) is not int or not 0 <= record[name] <= 0xFFFFFFFF for name in expected_keys):
+    raise EvidenceError("CRC observation values must be unsigned 32-bit integers")
+  if (record["range_start"], record["range_end"], record["adjust_address"]) != (
+    target.crc_range_start, target.crc_range_end, target.crc_adjust_address,
+  ):
+    raise EvidenceError("CRC observation addresses do not match target")
+  old_adjustment = int.from_bytes(
+    crc_sector[target.crc_adjust_offset:target.crc_adjust_offset + 4], "little",
+  )
+  if record["old_adjust_word"] != old_adjustment:
+    raise EvidenceError("CRC observation old adjustment does not match backup")
+  if record["new_adjust_word"] != (record["patched_prefix_sw"] ^ 0xFFFFFFFF):
+    raise EvidenceError("CRC observation adjustment formula is invalid")
+  if (
+    record["original_sw_full"] != record["original_dcra_raw"]
+    or record["patched_sw_full"] != record["patched_dcra_raw"]
+    or record["original_sw_full"] != 0xFFFFFFFF
+    or record["patched_sw_full"] != 0xFFFFFFFF
+  ):
+    raise EvidenceError("CRC/DCRA observation does not satisfy boot residue")
+  if (record["exit_ctl"], record["exit_cout"]) != (
+    record["entry_ctl"], record["entry_cout"],
+  ):
+    raise EvidenceError("DCRA exit state does not match entry state")
+  if (
+    record["sram_echo_length"] != target.sector_length
+    or record["sram_echo_crc32"] != binascii.crc32(target_sector)
+  ):
+    raise EvidenceError("SRAM backup observation does not match target backup")
 
 
 def _read_json(path: Path, label: str) -> dict[str, object]:
