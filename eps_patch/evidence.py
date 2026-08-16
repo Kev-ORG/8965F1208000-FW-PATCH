@@ -55,14 +55,14 @@ def install_probe_pass(
     raise TypeError("layout must be an ArtifactLayout")
   _require_bytes(target_sector, "target sector")
   _require_bytes(crc_sector, "CRC sector")
-  if layout.probe_directory.exists():
-    raise EvidenceError(f"trusted probe directory already exists: {layout.probe_directory}")
-
-  report_bytes = _encode_json(report, "report")
-  metadata_bytes = _encode_json(metadata, "metadata")
-  layout.root.mkdir(parents=True, exist_ok=True)
-  staging = Path(tempfile.mkdtemp(prefix=".probe-", dir=layout.root))
+  staging: Path | None = None
   try:
+    if layout.probe_directory.exists():
+      raise EvidenceError("trusted probe directory already exists")
+    report_bytes = _encode_json(report, "report")
+    metadata_bytes = _encode_json(metadata, "metadata")
+    layout.root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".probe-", dir=layout.root))
     _write_fsynced(staging / layout.probe_report.name, report_bytes)
     _write_fsynced(staging / layout.target_backup.name, target_sector)
     _write_fsynced(staging / layout.crc_backup.name, crc_sector)
@@ -71,14 +71,14 @@ def install_probe_pass(
     try:
       _rename_no_replace(staging, layout.probe_directory)
     except FileExistsError as exc:
-      raise EvidenceError(f"trusted probe directory already exists: {layout.probe_directory}") from exc
-    except OSError as exc:
-      raise EvidenceError(f"cannot atomically install trusted probe directory: {exc}") from exc
+      raise EvidenceError("trusted probe directory already exists") from exc
     _fsync_directory(layout.root)
-  except Exception:
-    if staging.exists():
-      shutil.rmtree(staging)
+  except EvidenceError:
+    _remove_staging(staging)
     raise
+  except OSError as exc:
+    _remove_staging(staging)
+    raise EvidenceError("cannot install probe evidence") from exc
   return layout.probe_report
 
 
@@ -222,7 +222,7 @@ def _read_json(path: Path, label: str) -> dict[str, object]:
   try:
     value = json.loads(path.read_text(encoding="utf-8"))
   except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-    raise EvidenceError(f"{label} cannot be read: {exc}") from exc
+    raise EvidenceError(f"{label} cannot be read") from exc
   return _require_object(value, label)
 
 
@@ -230,7 +230,7 @@ def _read_bytes(path: Path, label: str) -> bytes:
   try:
     return path.read_bytes()
   except OSError as exc:
-    raise EvidenceError(f"{label} cannot be read: {exc}") from exc
+    raise EvidenceError(f"{label} cannot be read") from exc
 
 
 def _encode_json(value: object, label: str) -> bytes:
@@ -255,6 +255,15 @@ def _fsync_directory(path: Path) -> None:
     os.fsync(descriptor)
   finally:
     os.close(descriptor)
+
+
+def _remove_staging(staging: Path | None) -> None:
+  if staging is None or not staging.exists():
+    return
+  try:
+    shutil.rmtree(staging)
+  except OSError:
+    pass
 
 
 def _rename_no_replace(source: Path, destination: Path) -> None:

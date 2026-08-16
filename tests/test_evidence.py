@@ -105,8 +105,9 @@ def test_installer_atomically_creates_complete_fixed_probe(valid_probe):
     "original-sector-0xf8000.bin", "recovery-metadata.json",
   }
   assert load_probe_pass(layout, TARGET).target_sector == target_sector
-  with pytest.raises(EvidenceError, match="already exists"):
+  with pytest.raises(EvidenceError, match="already exists") as exc_info:
     install_probe_pass(layout, target_sector, crc_sector, report, metadata)
+  assert str(layout.root) not in str(exc_info.value)
 
 
 def test_atomic_rename_never_replaces_an_empty_probe_directory(tmp_path: Path):
@@ -174,8 +175,22 @@ def test_semantic_loader_rejects_unreadable_or_incomplete_evidence(valid_probe, 
   else:
     write_probe(layout, target_sector[:-1], crc_sector, report, metadata)
 
-  with pytest.raises(EvidenceError):
+  with pytest.raises(EvidenceError) as exc_info:
     load_probe_pass(layout, TARGET)
+  assert str(layout.root) not in str(exc_info.value)
+
+
+def test_installer_hides_staging_path_when_file_write_fails(valid_probe, monkeypatch):
+  layout, target_sector, crc_sector, report, metadata = valid_probe
+
+  def fail_write(path: Path, content: bytes) -> None:
+    raise OSError(f"simulated write failure: {path}")
+
+  monkeypatch.setattr("eps_patch.evidence._write_fsynced", fail_write)
+
+  with pytest.raises(EvidenceError, match="cannot install probe evidence") as exc_info:
+    install_probe_pass(layout, target_sector, crc_sector, report, metadata)
+  assert str(layout.root) not in str(exc_info.value)
 
 
 def test_semantic_loader_rejects_backup_with_changed_instruction_context(valid_probe):

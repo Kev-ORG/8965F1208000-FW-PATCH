@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from eps_patch.paths import ArtifactLayout
+from eps_patch.paths import ArtifactLayout, DEFAULT_ARTIFACT_ROOT
+
+
+def test_default_layout_uses_the_fixed_comma_local_artifact_root():
+  assert DEFAULT_ARTIFACT_ROOT == Path("/data/eps-patch/artifacts")
+  assert ArtifactLayout().root == Path("/data/eps-patch/artifacts")
 
 
 def test_fixed_layout_uses_one_probe_and_timestamped_attempts(tmp_path: Path):
