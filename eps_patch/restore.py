@@ -1,0 +1,1076 @@
+"""Automatic, fail-closed recovery from persisted patch incident state."""
+
+from __future__ import annotations
+
+import binascii
+import hashlib
+import json
+import os
+import re
+import struct
+import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from pathlib import Path
+
+from .artifacts import _atomic_create, sha256_bytes
+from .evidence import EvidenceError, TrustedProbeEvidence, load_probe_pass
+from .manifest import TARGET, TargetManifest
+from .operation_lock import exclusive_operation
+from .paths import ArtifactLayout
+from .payload import (
+  REVIEWED_TEMPLATE_MANIFESTS,
+  SpecializedPayloadImage,
+  build_specialized_payload_image,
+)
+from .power import request_power_cycle
+from .protocol import OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult
+from .transport import BootloaderIdentity, EcuIdentity, RamBlob
+
+
+RAM_ECHO_ENVELOPE_SHA256 = (
+  "c938bfbd82e8f55c1597f0238c5d55213eea2196a04ed9594b298b37ac11b268"
+)
+RESTORE_INTENT_MAGIC = 0x52535452
+RESTORE_INTENT_SCHEMA = 1
+RESTORE_INTENT_LENGTH = 0x80
+RESTORE_INTENT_CRC_OFFSET = 48
+RESTORE_SOURCE_ADJUST_OFFSET = 52
+RESTORE_STAGED_CRC_OFFSET = 56
+_ATTEMPT_TIMESTAMP = re.compile(r"\A\d{8}T\d{6}Z\Z")
+_PATCH_STATE_KEYS = {
+  "schema",
+  "workflow",
+  "attempt",
+  "sequence",
+  "result",
+  "restore_order",
+  "created_at",
+  "updated_at",
+  "probe_report_sha256",
+  "automatic_forward_resume",
+  "automatic_retry",
+  "transitions",
+  "validation_errors",
+}
+_RESTORE_STATE_KEYS = {
+  "schema",
+  "workflow",
+  "attempt",
+  "sequence",
+  "result",
+  "restore_order",
+  "sector_bases",
+  "completed_sector_bases",
+  "created_at",
+  "updated_at",
+  "incident_timestamp",
+  "incident_result",
+  "incident_state_sha256",
+  "probe_report_sha256",
+  "automatic_retry",
+  "external_recovery_required",
+  "transitions",
+  "validation_errors",
+}
+_PATCH_ORDERS: dict[str, tuple[tuple[str, ...], ...]] = {
+  "STARTED": ((),),
+  "PROBED": ((),),
+  "TARGET_PRECHECKED": ((),),
+  "TARGET_ARMED": (("target",),),
+  "TARGET_INDETERMINATE": (("target",),),
+  "TARGET_COMMITTED": (("target",),),
+  "CRC_PRECHECKED": (("target",),),
+  "CRC_ARMED": (("crc", "target"),),
+  "CRC_INDETERMINATE": (("crc", "target"),),
+  "CRC_COMMITTED": (("crc", "target"),),
+  "VERIFY_PENDING": (("crc", "target"),),
+  "RECOVERY_REQUIRED": (("target",), ("crc", "target")),
+  "FAILED": ((),),
+  "PASS": ((),),
+}
+_PATCH_NEXT = {
+  "STARTED": {"PROBED", "FAILED"},
+  "PROBED": {"TARGET_PRECHECKED", "FAILED"},
+  "TARGET_PRECHECKED": {"TARGET_ARMED", "FAILED"},
+  "TARGET_ARMED": {
+    "TARGET_COMMITTED", "TARGET_INDETERMINATE", "RECOVERY_REQUIRED",
+  },
+  "TARGET_COMMITTED": {"CRC_PRECHECKED", "RECOVERY_REQUIRED"},
+  "CRC_PRECHECKED": {"CRC_ARMED", "RECOVERY_REQUIRED"},
+  "CRC_ARMED": {"CRC_COMMITTED", "CRC_INDETERMINATE", "RECOVERY_REQUIRED"},
+  "CRC_COMMITTED": {"VERIFY_PENDING", "RECOVERY_REQUIRED"},
+  "VERIFY_PENDING": {"PASS", "RECOVERY_REQUIRED"},
+  "PASS": {"RECOVERY_REQUIRED"},
+}
+_PATCH_FAILURE_STATES = {
+  "FAILED", "TARGET_INDETERMINATE", "CRC_INDETERMINATE", "RECOVERY_REQUIRED",
+}
+
+
+class RestoreError(RuntimeError):
+  """Restore evidence, planning, identity, or one-shot execution was unsafe."""
+
+
+class RestoreState(str, Enum):
+  STARTED = "STARTED"
+  CRC_ECHO_VERIFIED = "CRC_ECHO_VERIFIED"
+  CRC_ARMED = "CRC_ARMED"
+  CRC_COMMITTED = "CRC_COMMITTED"
+  TARGET_ECHO_VERIFIED = "TARGET_ECHO_VERIFIED"
+  TARGET_ARMED = "TARGET_ARMED"
+  TARGET_COMMITTED = "TARGET_COMMITTED"
+  FAILED = "FAILED"
+  INDETERMINATE = "INDETERMINATE"
+  PASS = "PASS"
+
+
+@dataclass(frozen=True, slots=True)
+class RestorePlan:
+  incident_directory: Path
+  incident_state_path: Path
+  incident_timestamp: str
+  incident_result: str
+  restore_order: tuple[str, ...]
+  sector_bases: tuple[int, ...]
+  incident_state_sha256: str
+  probe_report_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreBackup:
+  base: int
+  label: str
+  data: bytes
+  sha256: str
+  source_adjustment: bytes
+
+
+class _StateRecorder:
+  def __init__(self, directory: Path, *, timestamp: str, plan: RestorePlan) -> None:
+    self.path = directory / "state.json"
+    self.timestamp = timestamp
+    self.plan = plan
+    self.transitions: list[dict[str, object]] = []
+    self.completed: list[int] = []
+
+  def record(
+    self,
+    state: RestoreState,
+    *,
+    evidence: dict[str, object] | None = None,
+    error: str | None = None,
+  ) -> Path:
+    transition: dict[str, object] = {
+      "sequence": len(self.transitions),
+      "result": state.value,
+      "recorded_at": _now(),
+      "evidence": evidence or {},
+    }
+    if error is not None:
+      transition["error"] = error
+    self.transitions.append(transition)
+    try:
+      report: dict[str, object] = {
+        "schema": 1,
+        "workflow": "restore",
+        "attempt": self.timestamp,
+        "sequence": transition["sequence"],
+        "result": state.value,
+        "restore_order": list(self.plan.restore_order),
+        "sector_bases": [f"0x{base:x}" for base in self.plan.sector_bases],
+        "completed_sector_bases": [f"0x{base:x}" for base in self.completed],
+        "created_at": self.transitions[0]["recorded_at"],
+        "updated_at": transition["recorded_at"],
+        "incident_timestamp": self.plan.incident_timestamp,
+        "incident_result": self.plan.incident_result,
+        "incident_state_sha256": self.plan.incident_state_sha256,
+        "probe_report_sha256": self.plan.probe_report_sha256,
+        "automatic_retry": False,
+        "external_recovery_required": state is RestoreState.INDETERMINATE,
+        "transitions": self.transitions,
+        "validation_errors": [] if error is None else [error],
+      }
+      _atomic_replace_json(self.path, report)
+    except BaseException:
+      self.transitions.pop()
+      raise
+    return self.path
+
+
+def select_restore_plan(layout: ArtifactLayout) -> RestorePlan:
+  """Select the newest persisted patch incident that canonically needs restore."""
+  if not isinstance(layout, ArtifactLayout):
+    raise TypeError("layout must be an ArtifactLayout")
+  try:
+    entries = list(layout.patch_root.iterdir())
+  except FileNotFoundError:
+    entries = []
+  except OSError as exc:
+    raise RestoreError("cannot inspect persisted patch attempts") from exc
+  for directory in sorted(entries, key=lambda path: path.name, reverse=True):
+    if (
+      _ATTEMPT_TIMESTAMP.fullmatch(directory.name) is None
+      or not directory.is_dir()
+      or directory.is_symlink()
+    ):
+      raise RestoreError("patch state layout contains an invalid attempt entry")
+    state_path = directory / "state.json"
+    state, raw = _load_patch_state(state_path, directory.name)
+    order = tuple(state["restore_order"])
+    if not order:
+      continue
+    bases = tuple(
+      TARGET.crc_sector_base if name == "crc" else TARGET.sector_base
+      for name in order
+    )
+    return RestorePlan(
+      incident_directory=directory,
+      incident_state_path=state_path,
+      incident_timestamp=directory.name,
+      incident_result=state["result"],
+      restore_order=order,
+      sector_bases=bases,
+      incident_state_sha256=sha256_bytes(raw),
+      probe_report_sha256=state["probe_report_sha256"],
+    )
+  raise RestoreError("no recoverable persisted patch incident exists")
+
+
+def build_restore_intent(
+  backup: RestoreBackup,
+  *,
+  target: TargetManifest = TARGET,
+) -> bytes:
+  """Bind one reviewed original backup to the fixed restore payload intent."""
+  if type(backup) is not RestoreBackup:
+    raise RestoreError("restore intent requires an exact RestoreBackup")
+  if backup.base not in (target.sector_base, target.crc_sector_base):
+    raise RestoreError("restore intent sector base is not allowlisted")
+  if (
+    type(backup.data) is not bytes
+    or len(backup.data) != target.sector_length
+    or sha256_bytes(backup.data) != backup.sha256
+  ):
+    raise RestoreError("restore intent backup hash or length changed")
+  context = (
+    target.original_instruction
+    if backup.base == target.sector_base
+    else target.magic_word.to_bytes(4, "little")
+  )
+  block = bytearray(RESTORE_INTENT_LENGTH)
+  struct.pack_into(
+    "<IHHI",
+    block,
+    0,
+    RESTORE_INTENT_MAGIC,
+    RESTORE_INTENT_SCHEMA,
+    RESTORE_INTENT_LENGTH,
+    backup.base,
+  )
+  block[12:44] = bytes.fromhex(backup.sha256)
+  block[44:48] = context
+  if backup.base == target.crc_sector_base:
+    block[
+      RESTORE_SOURCE_ADJUST_OFFSET:RESTORE_SOURCE_ADJUST_OFFSET + 4
+    ] = backup.source_adjustment
+  struct.pack_into(
+    "<I", block, RESTORE_STAGED_CRC_OFFSET, binascii.crc32(backup.data),
+  )
+  crc_input = bytearray(block)
+  crc_input[RESTORE_INTENT_CRC_OFFSET:RESTORE_INTENT_CRC_OFFSET + 4] = bytes(4)
+  struct.pack_into(
+    "<I", block, RESTORE_INTENT_CRC_OFFSET, binascii.crc32(crc_input),
+  )
+  return bytes(block)
+
+
+def run_restore(
+  *,
+  layout: ArtifactLayout,
+  payloads,
+  templates,
+  preflight: Callable[[], object],
+  transport_factory: Callable[[], object],
+  confirmation: Callable[[str], object],
+  power_cycle_checkpoint: Callable[[str], object],
+  target: TargetManifest = TARGET,
+  new_uds: bool,
+) -> Path:
+  """Run one restore while excluding every concurrent patch/restore process."""
+  with exclusive_operation(layout, "restore"):
+    return _run_restore_locked(
+      layout=layout,
+      payloads=payloads,
+      templates=templates,
+      preflight=preflight,
+      transport_factory=transport_factory,
+      confirmation=confirmation,
+      power_cycle_checkpoint=power_cycle_checkpoint,
+      target=target,
+      new_uds=new_uds,
+    )
+
+
+def _run_restore_locked(
+  *,
+  layout: ArtifactLayout,
+  payloads,
+  templates,
+  preflight: Callable[[], object],
+  transport_factory: Callable[[], object],
+  confirmation: Callable[[str], object],
+  power_cycle_checkpoint: Callable[[str], object],
+  target: TargetManifest = TARGET,
+  new_uds: bool,
+) -> Path:
+  """Restore the persisted minimum safe sector set once, never automatically retrying."""
+  _validate_inputs(
+    layout=layout,
+    preflight=preflight,
+    transport_factory=transport_factory,
+    confirmation=confirmation,
+    power_cycle_checkpoint=power_cycle_checkpoint,
+    target=target,
+    new_uds=new_uds,
+  )
+  plan = select_restore_plan(layout)
+  _reject_prior_restore(layout, plan)
+  try:
+    trusted = load_probe_pass(layout, target)
+  except EvidenceError as exc:
+    raise RestoreError(f"fixed probe evidence is not a semantic PASS: {exc}") from exc
+  semantic_probe_digest = sha256_bytes(json.dumps(
+    trusted.report,
+    sort_keys=True,
+    separators=(",", ":"),
+  ).encode("utf-8"))
+  if semantic_probe_digest != plan.probe_report_sha256:
+    raise RestoreError("patch incident is not bound to the fixed probe evidence")
+  ram_echo = _validate_ram_echo_payload(payloads, target)
+  restore_template = _validate_restore_template(templates)
+  backups = tuple(_backup_for_base(trusted, base, target) for base in plan.sector_bases)
+  restore_images = tuple(
+    _build_restore_payload(restore_template, backup, target)
+    for backup in backups
+  )
+
+  preflight()
+  timestamp, directory = _create_attempt(layout)
+  recorder = _StateRecorder(directory, timestamp=timestamp, plan=plan)
+  recorder.record(
+    RestoreState.STARTED,
+    evidence={
+      "incident_state": str(plan.incident_state_path),
+      "incident_state_sha256": plan.incident_state_sha256,
+      "restore_order": list(plan.restore_order),
+    },
+  )
+  armed = False
+  previous_label: str | None = None
+  try:
+    for backup, image in zip(backups, restore_images, strict=True):
+      label = backup.label.upper()
+      if previous_label is not None:
+        request_power_cycle(
+          f"{previous_label}_COMMITTED",
+          f"{label}_ECHO_PENDING",
+          power_cycle_checkpoint,
+        )
+      with transport_factory() as transport:
+        echo_identity = transport.read_bootloader_identity()
+        _require_boot_identity(echo_identity, trusted.identity)
+        echo_result = transport.run_staged_payload(
+          ram_echo,
+          ram_blob=RamBlob(target.sram_buffer, backup.data),
+          operation=OP_RAM_ECHO,
+          new_uds=new_uds,
+        )
+      _validate_ram_echo_result(echo_result, backup, target)
+      echo_state = (
+        RestoreState.CRC_ECHO_VERIFIED
+        if backup.label == "crc" else RestoreState.TARGET_ECHO_VERIFIED
+      )
+      recorder.record(
+        echo_state,
+        evidence={
+          "identity": _boot_identity_record(echo_identity),
+          "sector_base": f"0x{backup.base:x}",
+          "backup_sha256": backup.sha256,
+          "ram_echo_payload": _payload_record(ram_echo),
+        },
+      )
+
+      arm_state = (
+        RestoreState.CRC_ARMED
+        if backup.label == "crc" else RestoreState.TARGET_ARMED
+      )
+      request_power_cycle(echo_state.value, arm_state.value, power_cycle_checkpoint)
+      with transport_factory() as transport:
+        writer_identity = transport.read_bootloader_identity()
+        _require_boot_identity(writer_identity, trusted.identity)
+        prompt = _restore_prompt(
+          backup=backup,
+          incident_sha256=plan.incident_state_sha256,
+          envelope_sha256=image.sha256,
+          target=target,
+        )
+        exact_confirmation = _require_exact_confirmation(confirmation, prompt)
+        recorder.record(
+          arm_state,
+          evidence={
+            "identity": _boot_identity_record(writer_identity),
+            "confirmation": exact_confirmation,
+            "operation": OP_RESTORE_SECTOR,
+            "sector_base": f"0x{backup.base:x}",
+            "backup_sha256": backup.sha256,
+            "payload": _restore_payload_record(image),
+          },
+        )
+        armed = True
+        restore_result = transport.run_staged_payload(
+          image,
+          ram_blob=RamBlob(target.sram_buffer, backup.data),
+          operation=OP_RESTORE_SECTOR,
+          new_uds=new_uds,
+        )
+      _validate_restore_result(restore_result, backup, target)
+      returned_path = directory / f"returned-sector-0x{backup.base:x}.bin"
+      _persist_sector(returned_path, restore_result.sector, target)
+      recorder.completed.append(backup.base)
+      committed_state = (
+        RestoreState.CRC_COMMITTED
+        if backup.label == "crc" else RestoreState.TARGET_COMMITTED
+      )
+      try:
+        recorder.record(
+          committed_state,
+          evidence={
+            "returned_file": returned_path.name,
+            "returned_sha256": sha256_bytes(restore_result.sector),
+            "statuses": _status_records(restore_result),
+          },
+        )
+      except BaseException:
+        recorder.completed.pop()
+        raise
+      previous_label = label
+
+    report = {
+      "schema": 1,
+      "workflow": "restore",
+      "result": "PASS",
+      "created_at": _now(),
+      "attempt": timestamp,
+      "incident_timestamp": plan.incident_timestamp,
+      "incident_state_sha256": plan.incident_state_sha256,
+      "probe_report_sha256": plan.probe_report_sha256,
+      "restore_order": list(plan.restore_order),
+      "sectors": [
+        {
+          "base": f"0x{backup.base:x}",
+          "length": len(backup.data),
+          "sha256": backup.sha256,
+          "returned_file": f"returned-sector-0x{backup.base:x}.bin",
+        }
+        for backup in backups
+      ],
+      "automatic_retry": False,
+      "validation_errors": [],
+    }
+    report_path = directory / "restore-report.json"
+    _atomic_create(report_path, _json_bytes(report))
+    recorder.record(
+      RestoreState.PASS,
+      evidence={"restore_report_sha256": sha256_bytes(report_path.read_bytes())},
+    )
+    return report_path
+  except BaseException as exc:
+    failure_state = RestoreState.INDETERMINATE if armed else RestoreState.FAILED
+    detail = f"{type(exc).__name__}: {exc}"
+    try:
+      recorder.record(failure_state, error=detail)
+    except BaseException as state_exc:
+      raise RestoreError(
+        f"restore failed and canonical state could not be persisted: {state_exc}"
+      ) from exc
+    if failure_state is RestoreState.INDETERMINATE:
+      raise RestoreError(
+        "restore outcome is INDETERMINATE; do not retry; external programming "
+        f"or professional recovery is required: {exc}"
+      ) from exc
+    raise RestoreError(f"restore stopped before any writer was armed: {exc}") from exc
+
+
+def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], bytes]:
+  if path.is_symlink() or not path.is_file():
+    raise RestoreError("patch state is missing or not a regular file")
+  try:
+    raw = path.read_bytes()
+    value = json.loads(raw.decode("utf-8"))
+  except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    raise RestoreError("patch state is not readable UTF-8 JSON") from exc
+  if type(value) is not dict or set(value) != _PATCH_STATE_KEYS:
+    raise RestoreError("patch state does not have the exact canonical schema")
+  if (
+    type(value["schema"]) is not int
+    or value["schema"] != 1
+    or value["workflow"] != "patch"
+    or value["attempt"] != timestamp
+    or type(value["sequence"]) is not int
+    or value["sequence"] < 0
+    or type(value["result"]) is not str
+    or value["result"] not in _PATCH_ORDERS
+    or type(value["restore_order"]) is not list
+    or tuple(value["restore_order"]) not in _PATCH_ORDERS[value["result"]]
+    or not _is_utc_timestamp(value["created_at"])
+    or not _is_utc_timestamp(value["updated_at"])
+    or not _is_sha256(value["probe_report_sha256"])
+    or value["automatic_forward_resume"] is not False
+    or value["automatic_retry"] is not False
+    or type(value["validation_errors"]) is not list
+    or value["validation_errors"]
+  ):
+    raise RestoreError("patch state fields are malformed or contradictory")
+  transitions = value["transitions"]
+  if type(transitions) is not list or len(transitions) != value["sequence"] + 1:
+    raise RestoreError("patch state transition history is incomplete")
+  for index, transition in enumerate(transitions):
+    if type(transition) is not dict or set(transition) not in (
+      {"sequence", "result", "recorded_at", "evidence"},
+      {"sequence", "result", "recorded_at", "evidence", "error"},
+    ):
+      raise RestoreError("patch state transition schema is malformed")
+    if (
+      type(transition["sequence"]) is not int
+      or transition["sequence"] != index
+      or type(transition["result"]) is not str
+      or transition["result"] not in _PATCH_ORDERS
+      or not _is_utc_timestamp(transition["recorded_at"])
+      or type(transition["evidence"]) is not dict
+      or (
+        "error" in transition
+        and (type(transition["error"]) is not str or not transition["error"])
+      )
+    ):
+      raise RestoreError("patch state transition fields are malformed")
+    if transition["result"] in _PATCH_FAILURE_STATES:
+      if "error" not in transition:
+        raise RestoreError("patch state failure transition has no error evidence")
+    elif not transition["evidence"] or "error" in transition:
+      raise RestoreError("patch state normal transition evidence is incomplete")
+  if transitions[0]["result"] != "STARTED" or any(
+    current["result"] not in _PATCH_NEXT.get(previous["result"], set())
+    for previous, current in zip(transitions, transitions[1:])
+  ):
+    raise RestoreError("patch state transition history is not reachable")
+  if (
+    transitions[-1]["result"] != value["result"]
+    or transitions[0]["recorded_at"] != value["created_at"]
+    or transitions[-1]["recorded_at"] != value["updated_at"]
+    or any(
+      datetime.fromisoformat(current["recorded_at"])
+        < datetime.fromisoformat(previous["recorded_at"])
+      for previous, current in zip(transitions, transitions[1:])
+    )
+  ):
+    raise RestoreError("patch state transition history contradicts its summary")
+  return value, raw
+
+
+def _reject_prior_restore(layout: ArtifactLayout, plan: RestorePlan) -> None:
+  try:
+    entries = list(layout.restore_root.iterdir())
+  except FileNotFoundError:
+    return
+  except OSError as exc:
+    raise RestoreError("cannot inspect prior restore attempts") from exc
+  for directory in sorted(entries, key=lambda path: path.name, reverse=True):
+    if (
+      _ATTEMPT_TIMESTAMP.fullmatch(directory.name) is None
+      or not directory.is_dir()
+      or directory.is_symlink()
+    ):
+      raise RestoreError("prior restore layout contains an invalid attempt entry")
+    state_path = directory / "state.json"
+    if state_path.is_symlink() or not state_path.is_file():
+      raise RestoreError("an already-running restore attempt has no terminal state")
+    try:
+      state = _load_restore_state(state_path, directory.name)
+    except RestoreError as exc:
+      raise RestoreError("an already-running restore attempt has malformed state") from exc
+    if state["result"] == RestoreState.INDETERMINATE.value:
+      raise RestoreError(
+        "a prior restore is INDETERMINATE; external programming or professional "
+        "recovery is required"
+      )
+    if state["result"] == RestoreState.FAILED.value:
+      continue
+    if state["incident_state_sha256"] == plan.incident_state_sha256:
+      if state["result"] == RestoreState.PASS.value:
+        raise RestoreError("the selected patch incident already has a PASS restore")
+      raise RestoreError("an already-running restore exists for the selected incident")
+    if state["result"] != RestoreState.PASS.value:
+      raise RestoreError("an already-running restore exists for a different incident")
+
+
+def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
+  try:
+    state = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    raise RestoreError("restore state is not readable UTF-8 JSON") from exc
+  if type(state) is not dict or set(state) != _RESTORE_STATE_KEYS:
+    raise RestoreError("restore state does not have the exact canonical schema")
+  order = state["restore_order"]
+  if type(order) is not list or tuple(order) not in (
+    ("target",), ("crc", "target"),
+  ):
+    raise RestoreError("restore state order is not canonical")
+  bases = tuple(
+    TARGET.crc_sector_base if label == "crc" else TARGET.sector_base
+    for label in order
+  )
+  base_records = [f"0x{base:x}" for base in bases]
+  result = state["result"]
+  known_results = {item.value for item in RestoreState}
+  if (
+    type(state["schema"]) is not int
+    or state["schema"] != 1
+    or state["workflow"] != "restore"
+    or state["attempt"] != timestamp
+    or type(state["sequence"]) is not int
+    or state["sequence"] < 0
+    or type(result) is not str
+    or result not in known_results
+    or state["sector_bases"] != base_records
+    or type(state["completed_sector_bases"]) is not list
+    or not _is_utc_timestamp(state["created_at"])
+    or not _is_utc_timestamp(state["updated_at"])
+    or type(state["incident_timestamp"]) is not str
+    or _ATTEMPT_TIMESTAMP.fullmatch(state["incident_timestamp"]) is None
+    or type(state["incident_result"]) is not str
+    or state["incident_result"] not in _PATCH_ORDERS
+    or tuple(order) not in _PATCH_ORDERS[state["incident_result"]]
+    or not _is_sha256(state["incident_state_sha256"])
+    or not _is_sha256(state["probe_report_sha256"])
+    or state["automatic_retry"] is not False
+    or type(state["external_recovery_required"]) is not bool
+    or type(state["validation_errors"]) is not list
+  ):
+    raise RestoreError("restore state fields are malformed or contradictory")
+  transitions = state["transitions"]
+  if type(transitions) is not list or len(transitions) != state["sequence"] + 1:
+    raise RestoreError("restore state transition history is incomplete")
+  happy_path = ["STARTED"]
+  for label in order:
+    upper = label.upper()
+    happy_path.extend((
+      f"{upper}_ECHO_VERIFIED", f"{upper}_ARMED", f"{upper}_COMMITTED",
+    ))
+  happy_path.append("PASS")
+  happy_index = 0
+  armed_seen = False
+  committed: list[str] = []
+  for index, transition in enumerate(transitions):
+    if type(transition) is not dict or set(transition) not in (
+      {"sequence", "result", "recorded_at", "evidence"},
+      {"sequence", "result", "recorded_at", "evidence", "error"},
+    ):
+      raise RestoreError("restore state transition schema is malformed")
+    transition_result = transition["result"]
+    if (
+      type(transition["sequence"]) is not int
+      or transition["sequence"] != index
+      or type(transition_result) is not str
+      or transition_result not in known_results
+      or not _is_utc_timestamp(transition["recorded_at"])
+      or type(transition["evidence"]) is not dict
+      or (
+        "error" in transition
+        and (type(transition["error"]) is not str or not transition["error"])
+      )
+    ):
+      raise RestoreError("restore state transition fields are malformed")
+    if index == 0:
+      if transition_result != "STARTED":
+        raise RestoreError("restore state does not start at STARTED")
+    elif transition_result == "FAILED":
+      if armed_seen or index != len(transitions) - 1:
+        raise RestoreError("restore FAILED state did not terminate before arm")
+    elif transition_result == "INDETERMINATE":
+      if not armed_seen or index != len(transitions) - 1:
+        raise RestoreError("restore INDETERMINATE state has no prior arm")
+    else:
+      happy_index += 1
+      if happy_index >= len(happy_path) or transition_result != happy_path[happy_index]:
+        raise RestoreError("restore state transition history is not reachable")
+    if transition_result.endswith("_ARMED"):
+      armed_seen = True
+    if transition_result.endswith("_COMMITTED"):
+      label = transition_result.removesuffix("_COMMITTED").lower()
+      committed.append(
+        f"0x{TARGET.crc_sector_base:x}"
+        if label == "crc" else f"0x{TARGET.sector_base:x}"
+      )
+    if transition_result in {"FAILED", "INDETERMINATE"}:
+      if "error" not in transition:
+        raise RestoreError("restore failure transition has no error evidence")
+    elif not transition["evidence"] or "error" in transition:
+      raise RestoreError("restore normal transition evidence is incomplete")
+  if (
+    transitions[-1]["result"] != result
+    or transitions[0]["recorded_at"] != state["created_at"]
+    or transitions[-1]["recorded_at"] != state["updated_at"]
+    or any(
+      datetime.fromisoformat(current["recorded_at"])
+        < datetime.fromisoformat(previous["recorded_at"])
+      for previous, current in zip(transitions, transitions[1:])
+    )
+    or state["completed_sector_bases"] != committed
+    or state["external_recovery_required"] != (result == "INDETERMINATE")
+    or (
+      result in {"FAILED", "INDETERMINATE"}
+      and state["validation_errors"] != [transitions[-1]["error"]]
+    )
+    or (
+      result not in {"FAILED", "INDETERMINATE"}
+      and state["validation_errors"] != []
+    )
+  ):
+    raise RestoreError("restore state transition history contradicts its summary")
+  return state
+
+
+def _validate_inputs(
+  *,
+  layout,
+  preflight,
+  transport_factory,
+  confirmation,
+  power_cycle_checkpoint,
+  target,
+  new_uds,
+) -> None:
+  if not isinstance(layout, ArtifactLayout):
+    raise TypeError("layout must be an ArtifactLayout")
+  if not isinstance(target, TargetManifest):
+    raise TypeError("target must be a TargetManifest")
+  try:
+    target.validate()
+  except ValueError as exc:
+    raise RestoreError(f"target manifest is invalid: {exc}") from exc
+  if type(new_uds) is not bool or new_uds is not target.new_uds:
+    raise RestoreError("restore UDS variant does not match the target")
+  for callback, label in (
+    (preflight, "preflight"),
+    (transport_factory, "transport factory"),
+    (confirmation, "restore confirmation"),
+    (power_cycle_checkpoint, "power-cycle checkpoint"),
+  ):
+    if not callable(callback):
+      raise TypeError(f"{label} must be callable")
+
+
+def _container_value(container, name: str, *, label: str):
+  if isinstance(container, Mapping):
+    try:
+      return container[name]
+    except KeyError as exc:
+      raise RestoreError(f"{label} is missing {name}") from exc
+  try:
+    return getattr(container, name)
+  except AttributeError as exc:
+    raise RestoreError(f"{label} is missing {name}") from exc
+
+
+def _validate_ram_echo_payload(payloads, target: TargetManifest):
+  payload = _container_value(payloads, "ram_echo", label="restore payload set")
+  try:
+    name = payload.name
+    envelope = payload.envelope
+    digest = payload.sha256
+  except AttributeError as exc:
+    raise RestoreError("ram_echo payload image is malformed") from exc
+  if name != "ram_echo":
+    raise RestoreError("ram_echo payload image has the wrong name")
+  if type(envelope) is not bytes or len(envelope) != target.envelope_length:
+    raise RestoreError("ram_echo payload envelope is not exact")
+  if (
+    type(digest) is not str
+    or hashlib.sha256(envelope).hexdigest() != digest
+    or digest != RAM_ECHO_ENVELOPE_SHA256
+  ):
+    raise RestoreError("ram_echo payload is not the exact reviewed envelope")
+  return payload
+
+
+def _validate_restore_template(templates) -> bytes:
+  template = _container_value(
+    templates, "restore_sector", label="restore template set",
+  )
+  manifest = REVIEWED_TEMPLATE_MANIFESTS["restore_sector"]
+  if (
+    type(template) is not bytes
+    or len(template) != manifest.size
+    or sha256_bytes(template) != manifest.sha256
+  ):
+    raise RestoreError("restore_sector is not the exact reviewed writer template")
+  return template
+
+
+def _backup_for_base(
+  trusted: TrustedProbeEvidence,
+  base: int,
+  target: TargetManifest,
+) -> RestoreBackup:
+  if type(trusted) is not TrustedProbeEvidence:
+    raise RestoreError("restore backup requires exact trusted probe evidence")
+  if base == target.sector_base:
+    data = trusted.target_sector
+    label = "target"
+    context = data[
+      target.instruction_offset:target.instruction_offset + len(target.original_instruction)
+    ]
+    if context != target.original_instruction or sha256_bytes(data) != target.original_sha256:
+      raise RestoreError("target original backup structure is invalid")
+    source_adjustment = bytes(4)
+  elif base == target.crc_sector_base:
+    data = trusted.crc_sector
+    label = "crc"
+    source_adjustment = data[
+      target.crc_adjust_offset:target.crc_adjust_offset + 4
+    ]
+    magic_offset = target.magic_addresses[1] - target.crc_sector_base
+    if (
+      source_adjustment
+        != target.crc_original_adjust_word.to_bytes(4, "little")
+      or data[magic_offset:magic_offset + 4]
+        != target.magic_word.to_bytes(4, "little")
+    ):
+      raise RestoreError("CRC original backup structure is invalid")
+  else:
+    raise RestoreError("restore backup base is not allowlisted")
+  if type(data) is not bytes or len(data) != target.sector_length:
+    raise RestoreError("restore backup is not one exact immutable sector")
+  return RestoreBackup(
+    base=base,
+    label=label,
+    data=data,
+    sha256=sha256_bytes(data),
+    source_adjustment=source_adjustment,
+  )
+
+
+def _build_restore_payload(
+  template: bytes,
+  backup: RestoreBackup,
+  target: TargetManifest,
+) -> SpecializedPayloadImage:
+  try:
+    image = build_specialized_payload_image(
+      template=template,
+      manifest=REVIEWED_TEMPLATE_MANIFESTS["restore_sector"],
+      intent=build_restore_intent(backup, target=target),
+      sector_base=backup.base,
+      backup_sha256=backup.sha256,
+    )
+    image.validate()
+  except Exception as exc:
+    raise RestoreError(f"restore payload specialization failed: {exc}") from exc
+  return image
+
+
+def _require_boot_identity(current: object, expected: EcuIdentity) -> None:
+  if (
+    type(current) is not BootloaderIdentity
+    or current.software_id != expected.boot_software_id
+    or current.panda_serial != expected.panda_serial
+    or not current.panda_serial
+  ):
+    raise RestoreError("fresh bootloader identity does not match fixed probe evidence")
+
+
+def _validate_ram_echo_result(
+  result: object,
+  backup: RestoreBackup,
+  target: TargetManifest,
+) -> None:
+  if (
+    type(result) is not StreamResult
+    or result.operation != OP_RAM_ECHO
+    or result.sector != backup.data
+    or sha256_bytes(result.sector) != backup.sha256
+    or result.magic_words != (target.magic_word, target.magic_word)
+    or result.statuses != ((1, 0),)
+    or result.faci_values
+    or result.regions
+    or result.crc_values
+    or result.crc is not None
+    or result.dcra_values
+    or result.dcra is not None
+  ):
+    raise RestoreError("RAM echo did not prove the complete exact original backup")
+
+
+def _validate_restore_result(
+  result: object,
+  backup: RestoreBackup,
+  target: TargetManifest,
+) -> None:
+  if (
+    type(result) is not StreamResult
+    or result.operation != OP_RESTORE_SECTOR
+    or result.sector != backup.data
+    or sha256_bytes(result.sector) != backup.sha256
+    or result.regions != (RegionResult(backup.base, backup.data),)
+    or result.magic_words != (target.magic_word, target.magic_word)
+    or result.statuses != tuple((stage, 0) for stage in range(1, 7))
+    or result.faci_values
+    or result.crc_values
+    or result.crc is not None
+    or result.dcra_values
+    or result.dcra is not None
+  ):
+    raise RestoreError("restore writer returned malformed or uncertain readback evidence")
+
+
+def _restore_prompt(
+  *,
+  backup: RestoreBackup,
+  incident_sha256: str,
+  envelope_sha256: str,
+  target: TargetManifest,
+) -> str:
+  return (
+    f"RESTORE-SECTOR {target.part_number.decode('ascii')} 0x{backup.base:x} "
+    f"SHA256={backup.sha256} INCIDENT={incident_sha256} "
+    f"PAYLOAD={envelope_sha256}"
+  )
+
+
+def _require_exact_confirmation(
+  callback: Callable[[str], object], prompt: str,
+) -> str:
+  response = callback(prompt)
+  if type(response) is not str or response != prompt:
+    raise RestoreError("destructive restore confirmation text does not match exactly")
+  return response
+
+
+def _create_attempt(layout: ArtifactLayout) -> tuple[str, Path]:
+  instant = datetime.now(timezone.utc).replace(microsecond=0)
+  restore_root_existed = layout.restore_root.exists()
+  layout.restore_root.mkdir(parents=True, exist_ok=True)
+  if not restore_root_existed:
+    _fsync_directory(layout.root)
+  for offset in range(86_400):
+    timestamp = (instant + timedelta(seconds=offset)).strftime("%Y%m%dT%H%M%SZ")
+    directory = layout.restore_attempt(timestamp)
+    try:
+      directory.mkdir(parents=False, exist_ok=False)
+    except FileExistsError:
+      continue
+    _fsync_directory(layout.restore_root)
+    return timestamp, directory
+  raise RestoreError("cannot allocate a unique UTC restore attempt directory")
+
+
+def _persist_sector(path: Path, sector: bytes, target: TargetManifest) -> None:
+  if type(sector) is not bytes or len(sector) != target.sector_length:
+    raise RestoreError(f"{path.name} is not one exact sector")
+  _atomic_create(path, sector)
+
+
+def _status_records(result: StreamResult) -> list[dict[str, int]]:
+  return [{"stage": stage, "code": code} for stage, code in result.statuses]
+
+
+def _boot_identity_record(identity: BootloaderIdentity) -> dict[str, str]:
+  return {
+    "boot_software_id": identity.software_id.hex(),
+    "panda_serial": identity.panda_serial,
+  }
+
+
+def _payload_record(payload) -> dict[str, str]:
+  return {"name": payload.name, "sha256": payload.sha256}
+
+
+def _restore_payload_record(image: SpecializedPayloadImage) -> dict[str, str]:
+  return {
+    "name": image.name,
+    "template_sha256": image.manifest.sha256,
+    "review_sha256": image.manifest.review_sha256,
+    "intent_sha256": sha256_bytes(image.intent),
+    "envelope_sha256": image.sha256,
+  }
+
+
+def _is_sha256(value: object) -> bool:
+  return (
+    type(value) is str
+    and len(value) == 64
+    and all(character in "0123456789abcdef" for character in value)
+  )
+
+
+def _is_utc_timestamp(value: object) -> bool:
+  if type(value) is not str:
+    return False
+  try:
+    parsed = datetime.fromisoformat(value)
+  except ValueError:
+    return False
+  return parsed.tzinfo is not None and parsed.utcoffset() == timedelta(0)
+
+
+def _now() -> str:
+  return datetime.now(timezone.utc).isoformat()
+
+
+def _json_bytes(report: dict[str, object]) -> bytes:
+  return (json.dumps(report, sort_keys=True, indent=2) + "\n").encode("utf-8")
+
+
+def _atomic_replace_json(path: Path, report: dict[str, object]) -> None:
+  path.parent.mkdir(parents=True, exist_ok=True)
+  descriptor, temporary = tempfile.mkstemp(
+    prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+  )
+  try:
+    with os.fdopen(descriptor, "wb") as stream:
+      stream.write(_json_bytes(report))
+      stream.flush()
+      os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    directory_descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+      os.fsync(directory_descriptor)
+    finally:
+      os.close(directory_descriptor)
+  finally:
+    try:
+      os.unlink(temporary)
+    except FileNotFoundError:
+      pass
+
+
+def _fsync_directory(path: Path) -> None:
+  descriptor = os.open(path, os.O_RDONLY)
+  try:
+    os.fsync(descriptor)
+  finally:
+    os.close(descriptor)
+
+
+__all__ = [
+  "RAM_ECHO_ENVELOPE_SHA256",
+  "RestoreError",
+  "RestorePlan",
+  "RestoreState",
+  "build_restore_intent",
+  "run_restore",
+  "select_restore_plan",
+]

@@ -7,6 +7,8 @@
     "crc_verify.c": "03ee249e92f9604e04f1c40f6eb6b32e7c5a8b707e624ae84c575387c662a010",
     "write_target_candidate.c": "456bd6d38888c4537254a8e47b57dff9ee511912d1dc9227e6c360922c66a0f9",
     "write_crc_candidate.c": "f1ce18c44f6230f545a9bfe5ba4e851223fc8f3c98af63d237c0274acf233e0f",
+    "ram_echo.c": "9d9e4d7b29ee2d20af1c74de71176356a728792bed14383013ff525b95701740",
+    "restore_sector.c": "dac734dbbb543484cfaf7831fbc6d8245cebaeef2485c9bf56a72c832361a153",
     "common.h": "0ce590efe4cd04f91de77eb599441f4e0c96518a58dd5ab0a394cd54b96768f3",
     "protocol.h": "ee3c925d0a7bfd98078f83a633cdcab05eb4da87b87f71540cd1ea18b1aeda10",
     "dcra.h": "87e0a9a97078b88757543381f954afff6719a30963d0313e5758b7bc6bbfabb6",
@@ -17,7 +19,7 @@
     "faci_dual.h": "90a3c35e2dbcfd96a7801daa20dfb44821753d2bf55d3684a2fca094dab4ea1e",
     "linker.ld": "7921a5eb2c2ca853e88e505da01dc86bff8779be1678ad85756cabe90f44059a",
     "linker_intent.ld": "29c0cc4c8c7a0efc9989b97883cb36986b8f1ffa7dbcfe6249470295dd13366b",
-    "build.sh": "eca85d64e05eea0a41f0f88f0f8f86bca52419ebba8b8da6d691bde4aa222555"
+    "build.sh": "5e18daf8b4d73574633acf457aaf8e0c82008b3fd64996a1c0ef64f256617af3"
   },
   "payloads": {
     "probe_pe_cycle": {"size": 2864, "sha256": "d3a3cf534930b1b5e58642b3e1bd2aa10f3c9352da9852bd04cc21cdeee6b4a1", "entrypoint": "0xfebf0000"},
@@ -25,6 +27,8 @@
     "crc_intermediate": {"size": 2482, "sha256": "c67fd90df1de30a0b90d5fc4bae6366a940989dc94dedcee4080fc384c40ebd7"},
     "crc_verify": {"size": 1852, "sha256": "ea1f7d9f2b08d0d5534a0f8e90e6797455522a2578e0227dc789663d7f794eb7"},
     "write_target_candidate": {"size": 3934, "sha256": "d0c600ff4ff266e491ac3a0baf4e77075c1863dc2290ae681a09a5bc1251af26"},
-    "write_crc_candidate": {"size": 3946, "sha256": "3698aca109af9e700b36a8c7fc4c7bacc7ca22acb9a2fa40864f1abd03cd685a"}
+    "write_crc_candidate": {"size": 3946, "sha256": "3698aca109af9e700b36a8c7fc4c7bacc7ca22acb9a2fa40864f1abd03cd685a"},
+    "ram_echo": {"size": 1132, "sha256": "9ad4eb4f3e59466e05e3597d733b07dcce8e6e0751a730227f4767a8439f942e"},
+    "restore_sector": {"size": 3936, "sha256": "17f17104af1689a2675488957af3bcf1e96d23d2407a2f0c1ee905c691b23d63"}
   }
 }

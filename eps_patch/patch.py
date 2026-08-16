@@ -23,6 +23,7 @@ from .candidate_writer import (
 from .crc import CrcCandidate, build_crc_candidate
 from .evidence import EvidenceError, TrustedProbeEvidence, load_probe_pass
 from .manifest import TARGET, TargetManifest
+from .operation_lock import exclusive_operation
 from .paths import ArtifactLayout
 from .payload import REVIEWED_TEMPLATE_MANIFESTS
 from .power import request_power_cycle
@@ -113,32 +114,63 @@ class _StateRecorder:
     if error is not None:
       transition["error"] = error
     self.transitions.append(transition)
-    report: dict[str, object] = {
-      "schema": 1,
-      "workflow": "patch",
-      "attempt": self.timestamp,
-      "sequence": transition["sequence"],
-      "result": state.value,
-      "restore_order": list(restore_order),
-      "created_at": self.transitions[0]["recorded_at"],
-      "updated_at": transition["recorded_at"],
-      "probe_report_sha256": sha256_bytes(
-        json.dumps(
-          self.evidence.report,
-          sort_keys=True,
-          separators=(",", ":"),
-        ).encode("utf-8")
-      ),
-      "automatic_forward_resume": False,
-      "automatic_retry": False,
-      "transitions": self.transitions,
-      "validation_errors": [],
-    }
-    _atomic_replace_json(self.path, report)
+    try:
+      report: dict[str, object] = {
+        "schema": 1,
+        "workflow": "patch",
+        "attempt": self.timestamp,
+        "sequence": transition["sequence"],
+        "result": state.value,
+        "restore_order": list(restore_order),
+        "created_at": self.transitions[0]["recorded_at"],
+        "updated_at": transition["recorded_at"],
+        "probe_report_sha256": sha256_bytes(
+          json.dumps(
+            self.evidence.report,
+            sort_keys=True,
+            separators=(",", ":"),
+          ).encode("utf-8")
+        ),
+        "automatic_forward_resume": False,
+        "automatic_retry": False,
+        "transitions": self.transitions,
+        "validation_errors": [],
+      }
+      _atomic_replace_json(self.path, report)
+    except BaseException:
+      self.transitions.pop()
+      raise
     return self.path
 
 
 def run_patch(
+  *,
+  layout: ArtifactLayout,
+  payloads,
+  templates,
+  preflight: Callable[[], object],
+  transport_factory: Callable[[], object],
+  confirmation: Callable[[str], object],
+  power_cycle_checkpoint: Callable[[str], object],
+  target: TargetManifest = TARGET,
+  new_uds: bool,
+) -> Path:
+  """Run one patch workflow while excluding every concurrent restore/patch."""
+  with exclusive_operation(layout, "patch"):
+    return _run_patch_locked(
+      layout=layout,
+      payloads=payloads,
+      templates=templates,
+      preflight=preflight,
+      transport_factory=transport_factory,
+      confirmation=confirmation,
+      power_cycle_checkpoint=power_cycle_checkpoint,
+      target=target,
+      new_uds=new_uds,
+    )
+
+
+def _run_patch_locked(
   *,
   layout: ArtifactLayout,
   payloads,

@@ -52,6 +52,14 @@ BUILT_PAYLOADS = {
     "size": 3946,
     "sha256": "3698aca109af9e700b36a8c7fc4c7bacc7ca22acb9a2fa40864f1abd03cd685a",
   },
+  "ram_echo": {
+    "size": 1132,
+    "sha256": "9ad4eb4f3e59466e05e3597d733b07dcce8e6e0751a730227f4767a8439f942e",
+  },
+  "restore_sector": {
+    "size": 3936,
+    "sha256": "17f17104af1689a2675488957af3bcf1e96d23d2407a2f0c1ee905c691b23d63",
+  },
 }
 BUILT_PAYLOAD_ENTRYPOINTS = {
   "probe_pe_cycle": "0xfebf0000",

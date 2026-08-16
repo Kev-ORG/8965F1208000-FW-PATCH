@@ -1,0 +1,849 @@
+import binascii
+import hashlib
+import inspect
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from eps_patch.artifacts import sha256_bytes
+from eps_patch.paths import ArtifactLayout
+from eps_patch.protocol import OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult
+from eps_patch.transport import BootloaderIdentity
+
+import test_patch as patch_fx
+
+
+def _patch_state(
+  layout: ArtifactLayout,
+  *,
+  result: str,
+  restore_order: list[str],
+  timestamp: str = "20260817T010203Z",
+) -> Path:
+  directory = layout.patch_attempt(timestamp)
+  directory.mkdir(parents=True, exist_ok=False)
+  recorded_at = "2026-08-17T01:02:03+00:00"
+  if result == "TARGET_INDETERMINATE":
+    states = (
+      "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+      "TARGET_INDETERMINATE",
+    )
+  elif result == "RECOVERY_REQUIRED" and restore_order == ["target"]:
+    states = (
+      "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+      "TARGET_COMMITTED", "RECOVERY_REQUIRED",
+    )
+  elif result == "RECOVERY_REQUIRED":
+    states = (
+      "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+      "TARGET_COMMITTED", "CRC_PRECHECKED", "CRC_ARMED", "CRC_COMMITTED",
+      "VERIFY_PENDING", "RECOVERY_REQUIRED",
+    )
+  elif result == "PASS":
+    states = (
+      "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+      "TARGET_COMMITTED", "CRC_PRECHECKED", "CRC_ARMED", "CRC_COMMITTED",
+      "VERIFY_PENDING", "PASS",
+    )
+  elif result == "FAILED":
+    states = ("STARTED", "FAILED")
+  else:
+    states = (result,)
+  transitions = []
+  for sequence, state_name in enumerate(states):
+    transition = {
+      "sequence": sequence,
+      "result": state_name,
+      "recorded_at": recorded_at,
+      "evidence": {} if state_name in {
+        "FAILED", "TARGET_INDETERMINATE", "CRC_INDETERMINATE",
+        "RECOVERY_REQUIRED",
+      } else {"state": state_name},
+    }
+    if state_name in {
+      "FAILED", "TARGET_INDETERMINATE", "CRC_INDETERMINATE",
+      "RECOVERY_REQUIRED",
+    }:
+      transition["error"] = "test incident"
+    transitions.append(transition)
+  state = {
+    "schema": 1,
+    "workflow": "patch",
+    "attempt": timestamp,
+    "sequence": len(transitions) - 1,
+    "result": result,
+    "restore_order": restore_order,
+    "created_at": recorded_at,
+    "updated_at": recorded_at,
+    "probe_report_sha256": sha256_bytes(json.dumps(
+      json.loads(layout.probe_report.read_text(encoding="utf-8")),
+      sort_keys=True,
+      separators=(",", ":"),
+    ).encode("utf-8")),
+    "automatic_forward_resume": False,
+    "automatic_retry": False,
+    "transitions": transitions,
+    "validation_errors": [],
+  }
+  path = directory / "state.json"
+  path.write_text(json.dumps(state), encoding="utf-8")
+  return path
+
+
+def _probe_case(tmp_path: Path):
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target, identity, target_source, crc_source, target_candidate, crc_candidate = (
+    patch_fx._case(layout)
+  )
+  return (
+    layout,
+    target,
+    identity,
+    target_source,
+    crc_source,
+    target_candidate,
+    crc_candidate,
+  )
+
+
+@pytest.mark.parametrize(
+  ("state", "expected"),
+  [
+    ({"result": "TARGET_INDETERMINATE", "restore_order": ["target"]}, (0x60000,)),
+    (
+      {"result": "RECOVERY_REQUIRED", "restore_order": ["crc", "target"]},
+      (0xF8000, 0x60000),
+    ),
+  ],
+)
+def test_restore_uses_persisted_minimum_safe_order(tmp_path, state, expected):
+  from eps_patch.restore import select_restore_plan
+
+  layout, *_case = _probe_case(tmp_path)
+  _patch_state(layout, **state)
+
+  assert select_restore_plan(layout).sector_bases == expected
+
+
+def test_restore_selects_newest_non_pass_recoverable_incident(tmp_path):
+  from eps_patch.restore import select_restore_plan
+
+  layout, *_case = _probe_case(tmp_path)
+  older = _patch_state(
+    layout,
+    timestamp="20260817T010203Z",
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  _patch_state(
+    layout,
+    timestamp="20260817T010204Z",
+    result="PASS",
+    restore_order=[],
+  )
+
+  plan = select_restore_plan(layout)
+
+  assert plan.incident_state_path == older
+  assert plan.incident_timestamp == "20260817T010203Z"
+
+
+def test_patch_report_install_failure_remains_a_selectable_two_sector_incident(
+  tmp_path,
+  monkeypatch,
+):
+  import eps_patch.patch as patch_module
+  from eps_patch.restore import select_restore_plan
+
+  real_create = patch_module._atomic_create
+
+  def fail_final_report(path, content):
+    if path.name == "patch-report.json":
+      raise OSError("final report storage unavailable")
+    return real_create(path, content)
+
+  monkeypatch.setattr(patch_module, "_atomic_create", fail_final_report)
+  result, state_path, _events, _confirmations = patch_fx._run_patch(tmp_path)
+
+  assert result is None
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert [item["result"] for item in state["transitions"][-2:]] == [
+    "PASS", "RECOVERY_REQUIRED",
+  ]
+  assert select_restore_plan(ArtifactLayout(tmp_path / "artifacts")).sector_bases == (
+    patch_fx.TARGET.crc_sector_base,
+    patch_fx.TARGET.sector_base,
+  )
+
+
+@pytest.mark.parametrize("module_name", ("patch", "restore"))
+def test_failed_state_write_does_not_retain_an_unpersisted_prospective_transition(
+  tmp_path,
+  monkeypatch,
+  module_name,
+):
+  from eps_patch.evidence import load_probe_pass
+  from eps_patch.restore import RestorePlan
+
+  layout, target, *_case = _probe_case(tmp_path)
+  if module_name == "patch":
+    import eps_patch.patch as module
+
+    recorder = module._StateRecorder(
+      tmp_path / "patch-recorder",
+      timestamp="20260817T010203Z",
+      evidence=load_probe_pass(layout, target),
+    )
+    first = module.PatchState.STARTED
+    prospective = module.PatchState.TARGET_ARMED
+  else:
+    import eps_patch.restore as module
+
+    plan = RestorePlan(
+      incident_directory=layout.patch_attempt("20260817T010203Z"),
+      incident_state_path=layout.patch_attempt("20260817T010203Z") / "state.json",
+      incident_timestamp="20260817T010203Z",
+      incident_result="TARGET_INDETERMINATE",
+      restore_order=("target",),
+      sector_bases=(target.sector_base,),
+      incident_state_sha256="1" * 64,
+      probe_report_sha256="2" * 64,
+    )
+    recorder = module._StateRecorder(
+      tmp_path / "restore-recorder",
+      timestamp="20260817T010204Z",
+      plan=plan,
+    )
+    first = module.RestoreState.STARTED
+    prospective = module.RestoreState.TARGET_ARMED
+  recorder.record(first, evidence={"state": first.value})
+  monkeypatch.setattr(
+    module,
+    "_atomic_replace_json",
+    lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("state fsync failed")),
+  )
+
+  with pytest.raises(OSError, match="fsync"):
+    recorder.record(prospective, evidence={"state": prospective.value})
+
+  assert [transition["result"] for transition in recorder.transitions] == [first.value]
+
+
+def test_committed_state_write_failure_keeps_indeterminate_state_canonical(
+  tmp_path,
+  monkeypatch,
+):
+  import eps_patch.restore as restore_module
+
+  real_replace = restore_module._atomic_replace_json
+  failed = False
+
+  def fail_committed_once(path, report):
+    nonlocal failed
+    if report["result"] == "TARGET_COMMITTED" and not failed:
+      failed = True
+      raise OSError("committed state fsync failed")
+    return real_replace(path, report)
+
+  monkeypatch.setattr(restore_module, "_atomic_replace_json", fail_committed_once)
+
+  report, state_path, _incident, _events, _confirmations, _powers = _run_restore(
+    tmp_path,
+    order=("target",),
+  )
+
+  assert report is None
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert state["result"] == "INDETERMINATE"
+  assert state["completed_sector_bases"] == []
+  assert restore_module._load_restore_state(state_path, state_path.parent.name) == state
+
+
+@pytest.mark.parametrize(
+  "setup",
+  (
+    "missing-root",
+    "pass-only",
+    "failed-without-restore",
+  ),
+)
+def test_restore_rejects_when_no_recoverable_incident_exists(tmp_path, setup):
+  from eps_patch.restore import RestoreError, select_restore_plan
+
+  layout, *_case = _probe_case(tmp_path)
+  if setup == "pass-only":
+    _patch_state(layout, result="PASS", restore_order=[])
+  elif setup == "failed-without-restore":
+    _patch_state(layout, result="FAILED", restore_order=[])
+
+  with pytest.raises(RestoreError, match="recoverable"):
+    select_restore_plan(layout)
+
+
+@pytest.mark.parametrize(
+  "mutation",
+  (
+    "invalid-json",
+    "wrong-order",
+    "contradictory-result",
+    "attempt-mismatch",
+    "transition-mismatch",
+    "automatic-retry",
+    "invalid-time",
+    "impossible-history",
+    "missing-transition-evidence",
+    "extra-field",
+  ),
+)
+def test_restore_rejects_malformed_or_contradictory_patch_state(tmp_path, mutation):
+  from eps_patch.restore import RestoreError, select_restore_plan
+
+  layout, *_case = _probe_case(tmp_path)
+  path = _patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  if mutation == "invalid-json":
+    path.write_text("{", encoding="utf-8")
+  else:
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "wrong-order":
+      state["restore_order"] = ["target", "crc"]
+    elif mutation == "contradictory-result":
+      state["restore_order"] = ["crc", "target"]
+    elif mutation == "attempt-mismatch":
+      state["attempt"] = "20260817T010204Z"
+    elif mutation == "transition-mismatch":
+      state["transitions"][-1]["result"] = "PASS"
+    elif mutation == "automatic-retry":
+      state["automatic_retry"] = True
+    elif mutation == "invalid-time":
+      state["updated_at"] = "not-a-time"
+      state["transitions"][-1]["recorded_at"] = "not-a-time"
+    elif mutation == "impossible-history":
+      del state["transitions"][2]
+      for sequence, transition in enumerate(state["transitions"]):
+        transition["sequence"] = sequence
+      state["sequence"] -= 1
+    elif mutation == "missing-transition-evidence":
+      state["transitions"][1]["evidence"] = {}
+    else:
+      state["extra"] = 0
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+  with pytest.raises(RestoreError, match="patch state"):
+    select_restore_plan(layout)
+
+
+def _ram_echo_result(data: bytes) -> StreamResult:
+  return StreamResult(
+    operation=OP_RAM_ECHO,
+    sector=data,
+    magic_words=(patch_fx.TARGET.magic_word, patch_fx.TARGET.magic_word),
+    statuses=((1, 0),),
+  )
+
+
+def _restore_result(base: int, data: bytes) -> StreamResult:
+  return StreamResult(
+    operation=OP_RESTORE_SECTOR,
+    sector=data,
+    magic_words=(patch_fx.TARGET.magic_word, patch_fx.TARGET.magic_word),
+    statuses=tuple((stage, 0) for stage in range(1, 7)),
+    regions=(RegionResult(base, data),),
+  )
+
+
+class FakeRestoreTransport:
+  def __init__(self, label, events, identity, operation, result=None, failure=None):
+    self.label = label
+    self.events = events
+    self.identity = identity
+    self.operation = operation
+    self.result = result
+    self.failure = failure
+
+  def __enter__(self):
+    self.events.append((self.label, "open"))
+    return self
+
+  def __exit__(self, *_args):
+    self.events.append((self.label, "close"))
+
+  def read_bootloader_identity(self):
+    self.events.append((self.label, "identity"))
+    return self.identity
+
+  def run_staged_payload(self, image, *, ram_blob, operation, new_uds):
+    self.events.append((self.label, "staged", operation, ram_blob.data, image.name))
+    assert operation == self.operation
+    assert new_uds is False
+    if self.failure is not None:
+      raise self.failure
+    return self.result
+
+
+def _restore_payloads():
+  from eps_patch.payload import build_envelope, load_built_shellcode
+  from eps_patch.restore import RAM_ECHO_ENVELOPE_SHA256
+
+  build = Path(__file__).resolve().parents[1] / "payload" / "build"
+  shellcode = load_built_shellcode(build, "ram_echo")
+  envelope = build_envelope(
+    shellcode,
+    did_201=bytes(16),
+    did_202=bytes(16),
+    iv=bytes(16),
+  )
+  assert hashlib.sha256(envelope).hexdigest() == RAM_ECHO_ENVELOPE_SHA256
+  return {
+    "ram_echo": SimpleNamespace(
+      name="ram_echo",
+      envelope=envelope,
+      sha256=RAM_ECHO_ENVELOPE_SHA256,
+    ),
+  }
+
+
+def _restore_templates():
+  build = Path(__file__).resolve().parents[1] / "payload" / "build"
+  return {"restore_sector": (build / "restore_sector.bin").read_bytes()}
+
+
+def _run_restore(
+  tmp_path,
+  *,
+  order=("crc", "target"),
+  failure=None,
+  wrong_identity=False,
+  exact_confirmation=True,
+):
+  from eps_patch.restore import RestoreError, run_restore
+
+  (
+    layout,
+    target,
+    identity,
+    target_source,
+    crc_source,
+    _target_candidate,
+    _crc_candidate,
+  ) = _probe_case(tmp_path)
+  result = "RECOVERY_REQUIRED" if len(order) == 2 else "TARGET_INDETERMINATE"
+  incident_path = _patch_state(layout, result=result, restore_order=list(order))
+  boot_identity = BootloaderIdentity(identity.boot_software_id, identity.panda_serial)
+  wrong = BootloaderIdentity(identity.boot_software_id, "other-panda")
+  data_by_name = {"crc": crc_source, "target": target_source}
+  base_by_name = {"crc": target.crc_sector_base, "target": target.sector_base}
+  events = []
+  transports = []
+  for name in order:
+    data = data_by_name[name]
+    base = base_by_name[name]
+    writer_result = _restore_result(base, data)
+    if failure == "malformed-result" and name == order[0]:
+      altered = bytes([data[0] ^ 1]) + data[1:]
+      writer_result = _restore_result(base, altered)
+    transports.extend((
+      FakeRestoreTransport(
+        f"{name}-echo",
+        events,
+        wrong if wrong_identity and not transports else boot_identity,
+        OP_RAM_ECHO,
+        _ram_echo_result(data),
+      ),
+      FakeRestoreTransport(
+        f"{name}-writer",
+        events,
+        boot_identity,
+        OP_RESTORE_SECTOR,
+        writer_result,
+        failure=TimeoutError("writer response lost") if failure == f"{name}-writer" else None,
+      ),
+    ))
+
+  def factory():
+    assert transports
+    return transports.pop(0)
+
+  confirmations = []
+  power_prompts = []
+  try:
+    report = run_restore(
+      layout=layout,
+      payloads=_restore_payloads(),
+      templates=_restore_templates(),
+      preflight=lambda: events.append(("preflight",)),
+      transport_factory=factory,
+      confirmation=lambda prompt: confirmations.append(prompt) or (
+        prompt if exact_confirmation else prompt + " "
+      ),
+      power_cycle_checkpoint=lambda prompt: power_prompts.append(prompt) or "",
+      target=target,
+      new_uds=False,
+    )
+  except RestoreError:
+    report = None
+  attempts = sorted(layout.restore_root.iterdir())
+  assert len(attempts) == 1
+  return (
+    report,
+    attempts[0] / "state.json",
+    incident_path,
+    events,
+    confirmations,
+    power_prompts,
+  )
+
+
+def test_run_restore_discovers_fixed_evidence_and_attempt_paths_from_layout_only():
+  from eps_patch.restore import run_restore
+
+  parameters = inspect.signature(run_restore).parameters
+  assert "layout" in parameters
+  assert not {
+    "backup", "backup_path", "probe_directory", "incident_directory",
+    "artifact_directory", "output",
+  } & set(parameters)
+
+
+def test_restore_crc_first_then_target_with_fresh_identity_and_exact_confirmation(tmp_path):
+  report, state_path, incident_path, events, confirmations, power_prompts = _run_restore(
+    tmp_path,
+  )
+
+  assert report == state_path.parent / "restore-report.json"
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert state["result"] == "PASS"
+  assert state["completed_sector_bases"] == ["0xf8000", "0x60000"]
+  assert state["incident_state_sha256"] == sha256_bytes(incident_path.read_bytes())
+  staged = [event for event in events if len(event) > 2 and event[1] == "staged"]
+  assert [event[2] for event in staged] == [
+    OP_RAM_ECHO, OP_RESTORE_SECTOR, OP_RAM_ECHO, OP_RESTORE_SECTOR,
+  ]
+  assert [event[4] for event in staged] == [
+    "ram_echo", "restore_sector", "ram_echo", "restore_sector",
+  ]
+  assert len(confirmations) == 2
+  assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")
+  assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x60000 ")
+  incident_digest = sha256_bytes(incident_path.read_bytes())
+  assert all(incident_digest in prompt for prompt in confirmations)
+  assert any("CRC_COMMITTED -> TARGET_ECHO_PENDING" in prompt for prompt in power_prompts)
+  assert (state_path.parent / "returned-sector-0xf8000.bin").exists()
+  assert (state_path.parent / "returned-sector-0x60000.bin").exists()
+
+
+def test_restore_rejects_missing_original_backup_before_hardware(tmp_path):
+  from eps_patch.restore import RestoreError, run_restore
+
+  layout, target, *_case = _probe_case(tmp_path)
+  _patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  layout.target_backup.unlink()
+  events = []
+
+  with pytest.raises(RestoreError, match="probe evidence"):
+    run_restore(
+      layout=layout,
+      payloads=_restore_payloads(),
+      templates=_restore_templates(),
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport"),
+      confirmation=lambda prompt: prompt,
+      power_cycle_checkpoint=lambda _prompt: "",
+      target=target,
+      new_uds=False,
+    )
+
+  assert events == []
+  assert not layout.restore_root.exists()
+
+
+def test_restore_rejects_live_identity_mismatch_without_flash_write(tmp_path):
+  report, state_path, _incident, events, _confirmations, _powers = _run_restore(
+    tmp_path,
+    order=("target",),
+    wrong_identity=True,
+  )
+
+  assert report is None
+  assert json.loads(state_path.read_text(encoding="utf-8"))["result"] == "FAILED"
+  assert not any(
+    len(event) > 2 and event[1] == "staged" and event[2] == OP_RESTORE_SECTOR
+    for event in events
+  )
+
+
+def test_restore_requires_incident_bound_confirmation_before_writer_arm(tmp_path):
+  report, state_path, _incident, events, confirmations, _powers = _run_restore(
+    tmp_path,
+    order=("target",),
+    exact_confirmation=False,
+  )
+
+  assert report is None
+  assert len(confirmations) == 1
+  assert json.loads(state_path.read_text(encoding="utf-8"))["result"] == "FAILED"
+  assert not any(
+    len(event) > 2 and event[1] == "staged" and event[2] == OP_RESTORE_SECTOR
+    for event in events
+  )
+
+
+def test_restore_rejects_an_already_running_restore_attempt(tmp_path):
+  from eps_patch.restore import RestoreError, run_restore
+
+  layout, target, *_case = _probe_case(tmp_path)
+  _patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  running = layout.restore_attempt("20260817T010204Z")
+  running.mkdir(parents=True)
+  events = []
+
+  with pytest.raises(RestoreError, match="already-running"):
+    run_restore(
+      layout=layout,
+      payloads=_restore_payloads(),
+      templates=_restore_templates(),
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport"),
+      confirmation=lambda prompt: prompt,
+      power_cycle_checkpoint=lambda _prompt: "",
+      target=target,
+      new_uds=False,
+    )
+
+  assert events == []
+
+
+def _write_prior_restore_state(layout, plan, *, result: str) -> Path:
+  timestamp = "20260817T010204Z"
+  prior = layout.restore_attempt(timestamp)
+  prior.mkdir(parents=True)
+  recorded_at = "2026-08-17T01:02:04+00:00"
+  if result == "FAILED":
+    states = ("STARTED", "FAILED")
+  elif result == "INDETERMINATE":
+    states = (
+      "STARTED", "TARGET_ECHO_VERIFIED", "TARGET_ARMED", "INDETERMINATE",
+    )
+  else:
+    states = ("STARTED", result)
+  transitions = []
+  for sequence, state_name in enumerate(states):
+    transition = {
+      "sequence": sequence,
+      "result": state_name,
+      "recorded_at": recorded_at,
+      "evidence": {} if state_name in {"FAILED", "INDETERMINATE"} else {
+        "state": state_name,
+      },
+    }
+    if state_name in {"FAILED", "INDETERMINATE"}:
+      transition["error"] = "test restore failure"
+    transitions.append(transition)
+  state = {
+    "schema": 1,
+    "workflow": "restore",
+    "attempt": timestamp,
+    "sequence": len(transitions) - 1,
+    "result": result,
+    "restore_order": list(plan.restore_order),
+    "sector_bases": [f"0x{base:x}" for base in plan.sector_bases],
+    "completed_sector_bases": [],
+    "created_at": recorded_at,
+    "updated_at": recorded_at,
+    "incident_timestamp": plan.incident_timestamp,
+    "incident_result": plan.incident_result,
+    "incident_state_sha256": plan.incident_state_sha256,
+    "probe_report_sha256": plan.probe_report_sha256,
+    "automatic_retry": False,
+    "external_recovery_required": result == "INDETERMINATE",
+    "transitions": transitions,
+    "validation_errors": ["test restore failure"],
+  }
+  path = prior / "state.json"
+  path.write_text(json.dumps(state), encoding="utf-8")
+  return path
+
+
+def test_restore_rejects_an_indeterminate_prior_restore_and_requires_external_recovery(tmp_path):
+  from eps_patch.restore import RestoreError, run_restore, select_restore_plan
+
+  layout, target, *_case = _probe_case(tmp_path)
+  _patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  plan = select_restore_plan(layout)
+  _write_prior_restore_state(layout, plan, result="INDETERMINATE")
+  events = []
+
+  with pytest.raises(RestoreError, match="external programming|professional recovery"):
+    run_restore(
+      layout=layout,
+      payloads=_restore_payloads(),
+      templates=_restore_templates(),
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport"),
+      confirmation=lambda prompt: prompt,
+      power_cycle_checkpoint=lambda _prompt: "",
+      target=target,
+      new_uds=False,
+    )
+
+  assert events == []
+
+
+def test_terminal_pre_arm_failure_does_not_block_a_new_restore_attempt(tmp_path):
+  from eps_patch.restore import _reject_prior_restore, select_restore_plan
+
+  layout, *_case = _probe_case(tmp_path)
+  _patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  plan = select_restore_plan(layout)
+  _write_prior_restore_state(layout, plan, result="FAILED")
+
+  assert _reject_prior_restore(layout, plan) is None
+
+
+def test_malformed_prior_failed_restore_does_not_bypass_one_shot_guard(tmp_path):
+  from eps_patch.restore import RestoreError, _reject_prior_restore, select_restore_plan
+
+  layout, *_case = _probe_case(tmp_path)
+  _patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  plan = select_restore_plan(layout)
+  prior = layout.restore_attempt("20260817T010204Z")
+  prior.mkdir(parents=True)
+  (prior / "state.json").write_text(json.dumps({
+    "schema": 1,
+    "workflow": "restore",
+    "result": "FAILED",
+    "incident_state_sha256": plan.incident_state_sha256,
+  }), encoding="utf-8")
+
+  with pytest.raises(RestoreError, match="malformed"):
+    _reject_prior_restore(layout, plan)
+
+
+def test_patch_and_restore_share_one_nonblocking_operation_lock(tmp_path):
+  from eps_patch.operation_lock import OperationBusyError, exclusive_operation
+  from eps_patch.patch import run_patch
+  from eps_patch.restore import run_restore
+
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  arguments = {
+    "layout": layout,
+    "payloads": {},
+    "templates": {},
+    "preflight": lambda: None,
+    "transport_factory": lambda: None,
+    "confirmation": lambda prompt: prompt,
+    "power_cycle_checkpoint": lambda _prompt: "",
+    "target": patch_fx.TARGET,
+    "new_uds": False,
+  }
+  with exclusive_operation(layout, "test-holder"):
+    with pytest.raises(OperationBusyError, match="already running"):
+      run_patch(**arguments)
+    with pytest.raises(OperationBusyError, match="already running"):
+      run_restore(**arguments)
+
+
+def test_restore_attempt_creation_fails_if_parent_directory_cannot_be_synced(
+  tmp_path,
+  monkeypatch,
+):
+  import eps_patch.restore as restore_module
+
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  layout.root.mkdir(parents=True)
+  real_sync = restore_module._fsync_directory
+
+  def fail_restore_root(path):
+    if path == layout.restore_root:
+      raise OSError("directory fsync failed")
+    return real_sync(path)
+
+  monkeypatch.setattr(restore_module, "_fsync_directory", fail_restore_root)
+  with pytest.raises(OSError, match="fsync"):
+    restore_module._create_attempt(layout)
+
+
+@pytest.mark.parametrize("fault", ("transport-loss", "malformed-result", "evidence-install"))
+def test_post_arm_restore_uncertainty_is_terminal_indeterminate_without_retry(
+  tmp_path,
+  monkeypatch,
+  fault,
+):
+  import eps_patch.restore as restore_module
+
+  if fault == "transport-loss":
+    failure = "crc-writer"
+  elif fault == "malformed-result":
+    failure = "malformed-result"
+  else:
+    failure = None
+  if fault == "evidence-install":
+    monkeypatch.setattr(
+      restore_module,
+      "_persist_sector",
+      lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk unavailable")),
+    )
+
+  report, state_path, _incident, events, _confirmations, _powers = _run_restore(
+    tmp_path,
+    failure=failure,
+  )
+
+  assert report is None
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert state["result"] == "INDETERMINATE"
+  assert state["automatic_retry"] is False
+  assert state["external_recovery_required"] is True
+  restore_calls = [
+    event for event in events
+    if len(event) > 2 and event[1] == "staged" and event[2] == OP_RESTORE_SECTOR
+  ]
+  assert len(restore_calls) == 1
+
+
+def test_restore_intent_binds_selected_backup_hash_context_and_crc(tmp_path):
+  from eps_patch.evidence import load_probe_pass
+  from eps_patch.restore import _backup_for_base, build_restore_intent
+
+  layout, target, *_case = _probe_case(tmp_path)
+  trusted = load_probe_pass(layout, target)
+  for base in (target.crc_sector_base, target.sector_base):
+    backup = _backup_for_base(trusted, base, target)
+    intent = build_restore_intent(backup, target=target)
+    assert len(intent) == 0x80
+    assert intent[12:44] == bytes.fromhex(backup.sha256)
+    assert int.from_bytes(intent[56:60], "little") == binascii.crc32(backup.data)
+    check = bytearray(intent)
+    supplied = check[48:52]
+    check[48:52] = bytes(4)
+    assert supplied == binascii.crc32(check).to_bytes(4, "little")
+    expected_context = (
+      target.magic_word.to_bytes(4, "little")
+      if base == target.crc_sector_base else target.original_instruction
+    )
+    assert intent[44:48] == expected_context

@@ -10,13 +10,14 @@ PAYLOAD = ROOT / "payload"
 BUILD = PAYLOAD / "build"
 REVIEWED_SOURCES = (
   "probe_pe_cycle.c", "crc_probe.c", "crc_intermediate.c", "crc_verify.c",
-  "write_target_candidate.c", "write_crc_candidate.c", "common.h", "protocol.h",
+  "write_target_candidate.c", "write_crc_candidate.c", "ram_echo.c",
+  "restore_sector.c", "common.h", "protocol.h",
   "dcra.h", "patch_common.h", "patch_protocol.h", "crc_runtime.h",
   "candidate_writer.h", "faci_dual.h", "linker.ld", "linker_intent.ld", "build.sh",
 )
 RUNTIME_PAYLOADS = {
   "probe_pe_cycle", "crc_probe", "crc_intermediate", "crc_verify",
-  "write_target_candidate", "write_crc_candidate",
+  "write_target_candidate", "write_crc_candidate", "ram_echo", "restore_sector",
 }
 
 
@@ -27,7 +28,7 @@ def require_cross_build() -> None:
     )
 
 
-def test_only_probe_and_two_sector_patch_runtime_binaries_are_retained_and_pinned():
+def test_only_probe_patch_and_restore_runtime_binaries_are_retained_and_pinned():
   require_cross_build()
   from eps_patch.payload import BUILT_PAYLOADS
 
