@@ -4,6 +4,10 @@
 .pytest_cache/
 __pycache__/
 *.pyc
+.coverage
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
 /artifacts/
 /payload/build/*
 !/payload/build/

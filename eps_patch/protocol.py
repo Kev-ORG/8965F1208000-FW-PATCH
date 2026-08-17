@@ -11,14 +11,8 @@ from .manifest import TARGET
 
 
 PROTOCOL_VERSION = 1
-OP_PROBE = 1
-OP_PATCH = 2
-OP_FACI_UNLOCK = 3
 OP_FACI_PE_CYCLE = 4
-OP_PATCH_V2 = 5
-OP_RESTORE = 6
 OP_CRC_PROBE = 7
-OP_PATCH_CRC = 8
 OP_RAM_ECHO = 9
 OP_RESTORE_SECTOR = 10
 OP_VERIFY_CRC = 11
@@ -39,11 +33,6 @@ DCRA_RECORDS = (
   "OLD_ADJUST_WORD", "NEW_ADJUST_WORD", "ORIGINAL_DCRA_RAW",
   "PATCHED_DCRA_RAW", "EXIT_CTL", "EXIT_COUT",
 )
-PATCH_CRC_STAGES = (
-  "PRECHECK", "TARGET_ENTER", "TARGET_ERASE", "TARGET_PROGRAM",
-  "TARGET_EXIT_READBACK", "CRC_ENTER", "CRC_ERASE", "CRC_PROGRAM",
-  "CRC_EXIT_READBACK", "FINAL_DCRA", "ROLLBACK_CRC", "ROLLBACK_TARGET",
-)
 CANDIDATE_WRITER_STAGES = (
   "PRECHECK", "ENTER", "ERASE", "PROGRAM", "EXIT", "READBACK",
 )
@@ -57,19 +46,9 @@ FACI_DIAGNOSTICS = (
   ("FLWL", 0xFFF8A430, 4),
   ("FLWE", 0xFFF82410, 4),
 )
-FACI_UNLOCK_DIAGNOSTICS = tuple(
-  (f"{checkpoint}.{name}", address, width)
-  for checkpoint in ("PRE", "UNLOCKED", "RESTORED")
-  for name, address, width in FACI_DIAGNOSTICS
-)
 FACI_PE_CYCLE_DIAGNOSTICS = tuple(
   (f"{checkpoint}.{name}", address, width)
   for checkpoint in ("PRE", "UNLOCKED", "WINDOWS", "CONFIGURED", "RESTORED")
-  for name, address, width in FACI_DIAGNOSTICS
-)
-PATCH_V2_DIAGNOSTICS = tuple(
-  (f"{checkpoint}.{name}", address, width)
-  for checkpoint in ("PRE", "ENTERED", "POST_ERASE", "POST_PROGRAM", "RESTORED")
   for name, address, width in FACI_DIAGNOSTICS
 )
 
@@ -175,7 +154,7 @@ class StreamCollector:
     if type(expected_operation) is not int:
       raise ProtocolError("expected operation must be an exact integer")
     if cls is StreamCollector and expected_operation in (
-      OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_VERIFY_CRC, OP_PATCH_CRC,
+      OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_VERIFY_CRC,
       OP_CRC_INTERMEDIATE, OP_LIVE_READ,
     ):
       return CrcStreamCollector(expected_operation=expected_operation)
@@ -188,10 +167,7 @@ class StreamCollector:
     return super().__new__(cls)
 
   def __init__(self, *, expected_operation: int):
-    if type(expected_operation) is not int or expected_operation not in (
-      OP_PROBE, OP_PATCH, OP_FACI_UNLOCK, OP_FACI_PE_CYCLE, OP_PATCH_V2,
-      OP_RESTORE, OP_RAM_ECHO, OP_RESTORE_SECTOR,
-    ):
+    if type(expected_operation) is not int or expected_operation != OP_RAM_ECHO:
       raise ProtocolError("unknown expected operation")
     self._expected_operation = expected_operation
     self._state = "BEGIN0"
@@ -207,29 +183,19 @@ class StreamCollector:
 
   @property
   def _diagnostic_layout(self) -> tuple[tuple[str, int, int], ...]:
-    if self._expected_operation == OP_PROBE:
-      return FACI_DIAGNOSTICS
-    if self._expected_operation == OP_FACI_UNLOCK:
-      return FACI_UNLOCK_DIAGNOSTICS
-    if self._expected_operation == OP_FACI_PE_CYCLE:
-      return FACI_PE_CYCLE_DIAGNOSTICS
-    if self._expected_operation in (OP_PATCH_V2, OP_RESTORE):
-      return PATCH_V2_DIAGNOSTICS
     return ()
 
   @property
   def _has_diagnostic_outcome(self) -> bool:
-    return self._expected_operation in (OP_FACI_UNLOCK, OP_FACI_PE_CYCLE)
+    return False
 
   @property
   def _has_patch_v2_outcome(self) -> bool:
-    return self._expected_operation in (OP_PATCH_V2, OP_RESTORE, OP_RESTORE_SECTOR)
+    return False
 
   @property
   def _destructive_operation_name(self) -> str:
-    if self._expected_operation == OP_RESTORE_SECTOR:
-      return "restore-sector"
-    return "restore" if self._expected_operation == OP_RESTORE else "patch-v2"
+    return "payload"
 
   def consume(self, can_id: int, bus: int, data: bytes) -> None:
     if can_id != TARGET.uds_response_id or bus != TARGET.bus:
@@ -254,12 +220,7 @@ class StreamCollector:
         raise ProtocolError("expected BEGIN0")
       self._validate_begin(data, sequence=0)
       base = struct.unpack_from("<I", data, 4)[0]
-      permitted_bases = (
-        (TARGET.sram_buffer,) if self._expected_operation == OP_RAM_ECHO
-        else (TARGET.sector_base, TARGET.crc_sector_base)
-        if self._expected_operation == OP_RESTORE_SECTOR
-        else (TARGET.sector_base,)
-      )
+      permitted_bases = (TARGET.sram_buffer,)
       if base not in permitted_bases:
         raise ProtocolError("BEGIN0 sector base does not match target")
       self._stream_base = base
@@ -271,10 +232,7 @@ class StreamCollector:
         raise ProtocolError("expected BEGIN1")
       self._validate_begin(data, sequence=1)
       length = struct.unpack_from("<I", data, 4)[0]
-      permitted_lengths = (
-        (0, TARGET.sector_length)
-        if self._has_patch_v2_outcome else (TARGET.sector_length,)
-      )
+      permitted_lengths = (TARGET.sector_length,)
       if length not in permitted_lengths:
         raise ProtocolError("BEGIN1 sector length does not match target")
       self._advertised_length = length
@@ -401,8 +359,6 @@ class StreamCollector:
       raise ProtocolError("stream is missing one or both MAGIC records")
     if self._diagnostic_layout and len(self._faci_values) != len(self._diagnostic_layout):
       raise ProtocolError("FACI diagnostic snapshot is incomplete")
-    if self._expected_operation == OP_PATCH and self._faci_values:
-      raise ProtocolError("DIAGNOSTIC record is forbidden for patch operation")
     if self._has_diagnostic_outcome:
       if len(self._statuses) != 1 or self._statuses[0][0] != 1:
         raise ProtocolError("FACI diagnostic stream requires exactly one stage-1 STATUS")
@@ -419,12 +375,7 @@ class StreamCollector:
       magic_words=(self._magic[0], self._magic[1]),
       statuses=tuple(self._statuses),
       faci_values=tuple(self._faci_values),
-      regions=(
-        (RegionResult(self._stream_base, bytes(self._sector)),)
-        if self._expected_operation == OP_RESTORE_SECTOR
-        and self._advertised_length != 0 and self._stream_base is not None
-        else ()
-      ),
+      regions=(),
     )
 
 
@@ -435,7 +386,7 @@ class CrcStreamCollector:
 
   def __init__(self, *, expected_operation: int):
     if type(expected_operation) is not int or expected_operation not in (
-      OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_VERIFY_CRC, OP_PATCH_CRC,
+      OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_VERIFY_CRC,
       OP_CRC_INTERMEDIATE, OP_LIVE_READ,
     ):
       raise ProtocolError("unknown CRC stream operation")
@@ -584,10 +535,10 @@ class CrcStreamCollector:
       stage = data[1]
       code = struct.unpack_from("<I", data, 4)[0]
       expected_stage = len(self._statuses) + 1
-      status_count = len(PATCH_CRC_STAGES) if self._expected_operation == OP_PATCH_CRC else 1
+      status_count = 1
       if data[2:4] != b"\x00\x00" or stage != expected_stage or stage > status_count:
         raise ProtocolError("CRC stream STATUS is out of sequence")
-      if self._expected_operation not in (OP_PATCH_CRC, OP_FACI_PE_CYCLE) and code != 0:
+      if self._expected_operation != OP_FACI_PE_CYCLE and code != 0:
         raise ProtocolError("CRC stream requires zero STATUS at stage 1")
       self._statuses.append((stage, code))
       if len(self._statuses) == status_count:
@@ -720,20 +671,6 @@ def validate_crc_intermediate(
   ):
     raise ProtocolError("intermediate CRC/DCRA/SRAM evidence is inconsistent")
   return crc
-
-
-def decode_patch_crc_statuses(statuses: tuple[tuple[int, int], ...]) -> dict[str, int]:
-  if type(statuses) is not tuple or len(statuses) != len(PATCH_CRC_STAGES):
-    raise ProtocolError("patch-crc requires exactly twelve STATUS records")
-  decoded: dict[str, int] = {}
-  for expected, (record, name) in enumerate(zip(statuses, PATCH_CRC_STAGES), start=1):
-    if type(record) is not tuple or len(record) != 2:
-      raise ProtocolError("patch-crc STATUS record is malformed")
-    stage, code = record
-    if type(stage) is not int or stage != expected or type(code) is not int or not 0 <= code <= 0xFFFFFFFF:
-      raise ProtocolError("patch-crc STATUS record is invalid or out of sequence")
-    decoded[name] = code
-  return decoded
 
 
 def decode_candidate_writer_statuses(

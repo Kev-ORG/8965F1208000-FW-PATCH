@@ -312,11 +312,12 @@ def test_transport_rejects_payload_before_programming_when_hash_is_wrong():
 
 
 def test_transport_formats_current_isotp_trigger_call():
+  from eps_patch.protocol import OP_FACI_PE_CYCLE
   from eps_patch.transport import EcuTransport
 
   isotp_calls = []
   with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
-    transport.trigger(operation=1, new_uds=True)
+    transport.trigger(operation=OP_FACI_PE_CYCLE, new_uds=True)
 
   args, kwargs = isotp_calls[0]
   assert args[1] == bytes.fromhex("31 01 ff 00 45 01 00 06 00 00 00 00 80 00")
@@ -336,31 +337,7 @@ def test_transport_accepts_pe_cycle_operation_for_the_same_target_route():
   )
 
 
-def test_transport_accepts_patch_v2_operation_for_the_same_target_route():
-  from eps_patch.protocol import OP_PATCH_V2
-  from eps_patch.transport import EcuTransport
-
-  isotp_calls = []
-  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
-    transport.trigger(operation=OP_PATCH_V2, new_uds=False)
-  assert isotp_calls[0][0][1] == bytes.fromhex(
-    "31 01 ff 00 45 00 00 06 00 00 00 00 80 00"
-  )
-
-
-def test_transport_accepts_restore_operation_for_the_same_target_route():
-  from eps_patch.protocol import OP_RESTORE
-  from eps_patch.transport import EcuTransport
-
-  isotp_calls = []
-  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
-    transport.trigger(operation=OP_RESTORE, new_uds=False)
-  assert isotp_calls[0][0][1] == bytes.fromhex(
-    "31 01 ff 00 45 00 00 06 00 00 00 00 80 00"
-  )
-
-
-@pytest.mark.parametrize("operation", (7, 8, 9, 10, 11))
+@pytest.mark.parametrize("operation", (7, 9, 10, 11))
 def test_transport_accepts_crc_operation_ids_for_the_same_target_route(operation):
   from eps_patch.transport import EcuTransport
 
@@ -422,44 +399,6 @@ def test_failed_session_transition_is_not_slept_or_retried():
   assert events == [("session", 1)]
 
 
-def test_transport_collects_only_target_frames_into_strict_stream():
-  from eps_patch.protocol import FACI_DIAGNOSTICS, FrameType, OP_PROBE, PROTOCOL_VERSION
-  from eps_patch.transport import EcuTransport
-
-  sector = bytes(0x8000)
-  frames = [
-    bytes([FrameType.BEGIN0, PROTOCOL_VERSION, OP_PROBE, 0]) + struct.pack("<I", 0x60000),
-    bytes([FrameType.BEGIN1, PROTOCOL_VERSION, OP_PROBE, 1]) + struct.pack("<I", len(sector)),
-  ]
-  frames.extend(
-    bytes([FrameType.DATA]) + struct.pack("<H", index) + b"\x00" + sector[index * 4:index * 4 + 4]
-    for index in range(0x2000)
-  )
-  frames.extend([
-    bytes([FrameType.MAGIC, 0, 0, 0]) + struct.pack("<I", 0x5AA5A55A),
-    bytes([FrameType.MAGIC, 1, 0, 0]) + struct.pack("<I", 0x5AA5A55A),
-  ])
-  faci_values = (0x80, 0x8000, 0, 0, 0, 0x3B00, 0, 0)
-  frames.extend(
-    bytes([FrameType.DIAGNOSTIC, slot, width, 0]) + struct.pack("<I", value)
-    for slot, ((_, _, width), value) in enumerate(zip(FACI_DIAGNOSTICS, faci_values))
-  )
-  frames.extend([
-    bytes([FrameType.STATUS, 1, 0, 0]) + bytes(4),
-    bytes([FrameType.END, 0, 0, 0]) + struct.pack("<I", binascii.crc32(sector)),
-  ])
-
-  with EcuTransport(bindings=fake_bindings([])) as transport:
-    FakePanda.instances[-1].can_batches = [[(0x123, b"noise", 0)]] + [
-      [(0x7A9, frame, 0) for frame in frames]
-    ]
-    result = transport.collect_stream(operation=OP_PROBE, timeout=1.0)
-
-  assert result.sector == sector
-  assert result.statuses == ((1, 0),)
-  assert result.faci_values == faci_values
-
-
 def test_transport_collects_ram_echo_as_one_exact_sram_region():
   from eps_patch.protocol import FrameType, OP_RAM_ECHO, PROTOCOL_VERSION
   from eps_patch.transport import EcuTransport
@@ -495,10 +434,10 @@ def test_transport_collects_ram_echo_as_one_exact_sram_region():
 
 
 def test_transport_converts_payload_protocol_errors_to_transport_errors():
-  from eps_patch.protocol import OP_PROBE
+  from eps_patch.protocol import OP_RAM_ECHO
   from eps_patch.transport import EcuTransport, TransportError
 
   with EcuTransport(bindings=fake_bindings([])) as transport:
     FakePanda.instances[-1].can_batches = [[(0x7A9, bytes(8), 0)]]
     with pytest.raises(TransportError, match="payload stream"):
-      transport.collect_stream(operation=OP_PROBE, timeout=0.1)
+      transport.collect_stream(operation=OP_RAM_ECHO, timeout=0.1)

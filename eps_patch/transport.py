@@ -12,8 +12,8 @@ from typing import Any, Callable
 from .manifest import TARGET, TargetManifest
 from .payload import PayloadError, SECURITY_ACCESS_SECRET, SpecializedPayloadImage
 from .protocol import (
-  FrameType, OP_CRC_INTERMEDIATE, OP_CRC_PROBE, OP_FACI_PE_CYCLE, OP_FACI_UNLOCK,
-  OP_LIVE_READ, OP_PATCH, OP_PATCH_CRC, OP_PATCH_V2, OP_PROBE, OP_RAM_ECHO, OP_RESTORE,
+  FrameType, OP_CRC_INTERMEDIATE, OP_CRC_PROBE, OP_FACI_PE_CYCLE,
+  OP_LIVE_READ, OP_RAM_ECHO,
   OP_RESTORE_SECTOR, OP_VERIFY_CRC, OP_WRITE_CRC_CANDIDATE,
   OP_WRITE_TARGET_CANDIDATE,
   ProtocolError, StreamCollector, StreamResult,
@@ -387,8 +387,7 @@ class EcuTransport:
   ) -> None:
     bindings, panda, _uds = self._require_open()
     if operation not in (
-      OP_PROBE, OP_PATCH, OP_FACI_UNLOCK, OP_FACI_PE_CYCLE, OP_PATCH_V2,
-      OP_RESTORE, OP_CRC_PROBE, OP_PATCH_CRC, OP_RAM_ECHO, OP_RESTORE_SECTOR,
+      OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_RAM_ECHO, OP_RESTORE_SECTOR,
       OP_VERIFY_CRC, OP_CRC_INTERMEDIATE, OP_WRITE_TARGET_CANDIDATE,
       OP_WRITE_CRC_CANDIDATE, OP_LIVE_READ,
     ):

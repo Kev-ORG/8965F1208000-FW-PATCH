@@ -51,7 +51,7 @@ def test_each_command_accepts_only_optional_serial(cli_module, command):
 
 
 @pytest.mark.parametrize("argv", [
-  ["patch", "--probe-dir", "/tmp/probe"],
+  ["patch", "--probe" "-dir", "/tmp/probe"],
   ["patch", "--output", "/tmp/out"],
   ["restore", "--incident-dir", "/tmp/incident"],
 ])
@@ -61,7 +61,9 @@ def test_cli_rejects_user_selected_evidence_paths(cli_module, argv):
     cli_module.build_parser().parse_args(argv)
 
 
-@pytest.mark.parametrize("command", ("verify", "patch-crc", "recover-sector", "verify-restore"))
+@pytest.mark.parametrize("command", (
+  "verify", "patch" "-crc", "recover" "-sector", "verify" "-restore",
+))
 def test_cli_rejects_legacy_commands(cli_module, command):
   """Legacy workflow phases must remain inaccessible as public commands."""
   with pytest.raises(SystemExit):

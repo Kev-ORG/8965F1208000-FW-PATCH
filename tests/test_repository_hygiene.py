@@ -36,6 +36,18 @@ def test_repository_contains_no_local_or_rebuildable_outputs():
 
 
 def test_reviewed_primitive_package_is_importable():
-    from eps_patch import TARGET
+  from eps_patch import TARGET
 
-    assert TARGET.part_number == b"8965B4512000"
+  assert TARGET.part_number == b"8965B4512000"
+
+
+def test_legacy_payload_operations_and_artifact_workflow_are_not_retained():
+  import eps_patch.protocol as protocol
+
+  assert not [
+    name for name in (
+      "OP_" "PROBE", "OP_" "PATCH", "OP_" "FACI_" "UNLOCK",
+      "OP_" "PATCH_" "V2", "OP_" "RESTORE", "OP_" "PATCH_" "CRC",
+    ) if hasattr(protocol, name)
+  ]
+  assert not (ROOT / "eps_patch" / "crc_artifacts.py").exists()
