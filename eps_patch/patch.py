@@ -226,6 +226,7 @@ def _run_patch_locked(
   except EvidenceError as exc:
     raise PatchError(f"fixed probe evidence is not a semantic PASS: {exc}") from exc
   candidate = _candidate_from_probe(trusted, target)
+  legacy_recovery: str | None = None
   if resume is None:
     timestamp, directory = _create_attempt(layout)
     recorder = _StateRecorder(directory, timestamp=timestamp, evidence=trusted)
@@ -247,18 +248,20 @@ def _run_patch_locked(
       transitions=state["transitions"],
     )
     entry = PatchState(state["result"])
-
-  if entry is PatchState.CRC_INDETERMINATE:
     from .restore import _legacy_crc_trigger_recovery_status
 
     legacy_recovery = _legacy_crc_trigger_recovery_status(state["transitions"])
-    if legacy_recovery == "pending":
-      _validate_legacy_crc_trigger_writer_evidence(
+    if legacy_recovery in {"pending", "consumed"}:
+      _validate_legacy_crc_trigger_evidence(
         state=state,
+        trusted=trusted,
         candidate=candidate,
         target=target,
+        live_read=patch_payloads["live_read"],
         template=writer_templates["write_crc_candidate"],
       )
+
+  if entry is PatchState.CRC_INDETERMINATE:
     try:
       preflight()
       with transport_factory() as transport:
@@ -804,7 +807,14 @@ def _validate_legacy_crc_trigger_writer_evidence(
   transitions = state.get("transitions")
   if type(transitions) is not list or len(transitions) < 2:
     raise PatchError("legacy CRC writer evidence is incomplete")
-  second_arm = transitions[-2]
+  incidents = [
+    index for index, transition in enumerate(transitions)
+    if type(transition) is dict
+    and transition.get("result") == PatchState.CRC_INDETERMINATE.value
+  ]
+  if len(incidents) < 2 or incidents[1] < 1:
+    raise PatchError("legacy CRC writer evidence is incomplete")
+  second_arm = transitions[incidents[1] - 1]
   evidence = second_arm.get("evidence") if type(second_arm) is dict else None
   expected = {
     "operation": OP_WRITE_CRC_CANDIDATE,
@@ -818,6 +828,120 @@ def _validate_legacy_crc_trigger_writer_evidence(
     evidence.get(name) != value for name, value in expected.items()
   ):
     raise PatchError("legacy CRC writer evidence does not match the reviewed writer")
+
+
+def _validate_legacy_crc_trigger_evidence(
+  *,
+  state: dict[str, object],
+  trusted: TrustedProbeEvidence,
+  candidate: CrcCandidate,
+  target: TargetManifest,
+  live_read,
+  template: bytes,
+) -> None:
+  from .restore import _legacy_crc_trigger_recovery_status
+
+  transitions = state.get("transitions")
+  if type(transitions) is not list:
+    raise PatchError("legacy CRC recovery evidence is incomplete")
+  status = _legacy_crc_trigger_recovery_status(transitions)
+  if status not in {"pending", "consumed"}:
+    raise PatchError("legacy CRC recovery evidence is not exact")
+  incidents = [
+    index for index, transition in enumerate(transitions)
+    if type(transition) is dict
+    and transition.get("result") == PatchState.CRC_INDETERMINATE.value
+  ]
+  if len(incidents) != 2:
+    raise PatchError("legacy CRC recovery evidence is incomplete")
+  first_index, second_index = incidents
+  probed = next(
+    (
+      transition for transition in transitions[:first_index]
+      if type(transition) is dict
+      and transition.get("result") == PatchState.PROBED.value
+    ),
+    None,
+  )
+  first = transitions[first_index]
+  first_reconciliation = transitions[first_index + 1]
+  second_arm = transitions[second_index - 1]
+  probed_evidence = probed.get("evidence") if type(probed) is dict else None
+  first_evidence = (
+    first_reconciliation.get("evidence")
+    if type(first_reconciliation) is dict else None
+  )
+  second_arm_evidence = (
+    second_arm.get("evidence") if type(second_arm) is dict else None
+  )
+  expected_boot_identity = {
+    "boot_software_id": trusted.identity.boot_software_id.hex(),
+    "panda_serial": trusted.identity.panda_serial,
+  }
+  expected_live_read = _payload_record(live_read)
+  expected_probed = {
+    "identity": _identity_record(trusted.identity),
+    "target_source_sha256": sha256_bytes(candidate.target_source),
+    "crc_source_sha256": sha256_bytes(candidate.crc_source),
+    "target_candidate_sha256": sha256_bytes(candidate.target_final),
+    "crc_candidate_sha256": sha256_bytes(candidate.crc_final),
+  }
+  expected_first = {
+    "identity": expected_boot_identity,
+    "reconciled_from": PatchState.CRC_INDETERMINATE.value,
+    "reconciled_sequence": first.get("sequence") if type(first) is dict else None,
+    "classification": "source",
+    "target_readback_sha256": sha256_bytes(candidate.target_final),
+    "crc_readback_sha256": sha256_bytes(candidate.crc_source),
+    "payload": expected_live_read,
+  }
+  if (
+    type(probed_evidence) is not dict
+    or any(probed_evidence.get(name) != value for name, value in expected_probed.items())
+    or type(first_evidence) is not dict
+    or any(first_evidence.get(name) != value for name, value in expected_first.items())
+    or type(second_arm_evidence) is not dict
+    or second_arm_evidence.get("identity") != expected_boot_identity
+  ):
+    raise PatchError("legacy CRC recovery evidence does not match trusted evidence")
+  _validate_legacy_crc_trigger_writer_evidence(
+    state=state,
+    candidate=candidate,
+    target=target,
+    template=template,
+  )
+  if status == "pending":
+    return
+  consuming = transitions[second_index + 1]
+  consuming_evidence = (
+    consuming.get("evidence") if type(consuming) is dict else None
+  )
+  classification = {
+    PatchState.CRC_PRECHECKED.value: "source",
+    PatchState.CRC_COMMITTED.value: "candidate",
+  }.get(consuming.get("result") if type(consuming) is dict else None)
+  expected_consuming = {
+    "identity": expected_boot_identity,
+    "reconciled_from": PatchState.CRC_INDETERMINATE.value,
+    "reconciled_sequence": second_index,
+    "classification": classification,
+    "target_readback_sha256": sha256_bytes(candidate.target_final),
+    "crc_readback_sha256": sha256_bytes(
+      candidate.crc_source if classification == "source" else candidate.crc_final
+    ),
+    "payload": expected_live_read,
+    "legacy_trigger_recovery": "nrc31-route-v1",
+    "legacy_trigger_rejection_sequence": second_index,
+  }
+  if (
+    classification is None
+    or type(consuming_evidence) is not dict
+    or any(
+      consuming_evidence.get(name) != value
+      for name, value in expected_consuming.items()
+    )
+  ):
+    raise PatchError("legacy CRC consumption does not match trusted evidence")
 
 
 def _reject_unresolved_patch_incident(

@@ -645,7 +645,7 @@ def test_restore_routes_crc_before_target_after_fresh_live_reads(tmp_path):
   assert [record.returned_base for record in writer_records] == [0xF8000, 0x60000]
   assert [record.trigger_frame for record in writer_records] == [
     bytes.fromhex("31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"),
-    bytes.fromhex("31 01 ff 00 45 00 00 06 00 00 00 00 80 00"),
+    bytes.fromhex("31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"),
   ]
   assert len(confirmations) == 2
   assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")

@@ -40,7 +40,7 @@ python3.12 eps_patch.py patch
 
 Patch 自动读取固定 probe 证据，不接受报告、备份或目录参数。它先写目标扇区 `0x60000`，再写启动 CRC 扇区 `0xf8000`。
 
-每次 payload 下载都严格是 `0xFEBF0000` 的 `0x1000`（4 KiB）加密 envelope。32 KiB 扇区绝不会由主机上传到 SRAM：写入前 writer 在 ECU 内从已验证的 Flash 扇区复制到 SRAM，只修改固定的指令字或 CRC 调整字，并在擦写前校验本地生成候选的 CRC。CRC 预检也直接读取 Flash 并验证软件 CRC 与 DCRA；它不再把“主机上传数据的 SRAM 回显”当作 Flash 真实性证明。
+每次 payload 下载和认证都严格使用 RAM `0xFEBF0000 / 0x1000`（4 KiB）加密 envelope；每个通过校验的 payload 随后都用固定的 UDS `FF00` 范围 `0xE0000 / 0x8000` 触发。这个内部 trigger range 不会改变专用 payload 的实际方向：target 仍是 `0x60000`，CRC 仍是 `0xF8000`。32 KiB 扇区绝不会由主机上传到 SRAM：写入前 writer 在 ECU 内从已验证的 Flash 扇区复制到 SRAM，只修改固定的指令字或 CRC 调整字，并在擦写前校验本地生成候选的 CRC。CRC 预检也直接读取 Flash 并验证软件 CRC 与 DCRA；它不再把“主机上传数据的 SRAM 回显”当作 Flash 真实性证明。
 
 一次 `patch` 命令最多下载并执行一个 ECU payload，绝不会在一个已经驻留 RAM payload 的 UDS 会话后立即打开第二个 UDS 会话。每个 payload 之后，脚本会先持久化完成阶段、打印提示并正常退出。完整断开车辆/EPS 电源、等待放电、恢复稳定供电并让 comma 重启；重新 SSH 后再次运行同一条 `python3.12 eps_patch.py patch`。脚本只继续该 attempt 的下一安全阶段，绝不会自动重试。
 
@@ -64,7 +64,7 @@ python3.12 eps_patch.py patch
 - 输出/状态为 `CRC_COMMITTED`：target 和 CRC 都已完整等于候选。脚本不会再次写 CRC；按提示完整断电重启，再运行 `patch` 完成最终只读 CRC/DCRA 验证。
 - 报告 partial/unknown、身份不符或 live-read 不完整：不要再次运行 `patch`；保留证据并完成审查后，才运行 `restore`。原 `CRC_INDETERMINATE` state 保持不变。
 
-绝对不要手动编辑、替换或“修复”事故目录中的 `state.json`；程序会校验完整历史并原子推进状态。`WRITE-CRC` 或 restore 摘要显示实际 CRC 扇区 `0xF8000` 是正确且预期的：payload 内部仍读写并回传 `0xF8000`，只有主机内部的 UDS `FF00` trampoline route 使用 `0xE0000 / 0x8000`。操作员不输入或选择 `0xE0000`。
+绝对不要手动编辑、替换或“修复”事故目录中的 `state.json`；程序会校验完整历史并原子推进状态。`WRITE-TARGET`、`WRITE-CRC` 或 restore 摘要显示实际扇区 `0x60000` 或 `0xF8000` 是正确且预期的：payload 内部仍按摘要读写并回传该实际扇区，而所有 payload 共用主机内部固定的 UDS `FF00` trigger range `0xE0000 / 0x8000`。操作员不输入或选择 `0xE0000`。
 
 若那一次人工 CRC 重写仍变成 `CRC_INDETERMINATE`，以后所有 `patch` 都会在 preflight、Panda 连接和确认之前拒绝；只能进入 restore。车辆故障码或转向状态不能代替完整扇区回读。
 
@@ -119,7 +119,7 @@ python3.12 eps_patch.py patch
 
 Patch reads only the fixed probe evidence; it accepts no report, backup, or artifact-directory path. It always writes the target sector (`0x60000`) first, then the CRC sector (`0xf8000`).
 
-Every payload download is exactly one encrypted `0x1000` (4 KiB) envelope at `0xFEBF0000`. The 32 KiB sector is never uploaded from the host to SRAM: before erasing, the writer copies the verified live Flash sector into ECU SRAM, changes only the fixed instruction word or CRC adjustment word, and checks the locally derived candidate CRC. CRC precheck also reads Flash directly and verifies both software CRC and DCRA; a host-uploaded SRAM echo is not treated as proof of live Flash.
+Every payload download and authentication uses exactly one encrypted `0x1000` (4 KiB) envelope at RAM `0xFEBF0000`; every validated payload is then triggered through the fixed UDS `FF00` range `0xE0000 / 0x8000`. That internal trigger range does not change a specialized payload's actual direction: target remains `0x60000` and CRC remains `0xF8000`. The 32 KiB sector is never uploaded from the host to SRAM: before erasing, the writer copies the verified live Flash sector into ECU SRAM, changes only the fixed instruction word or CRC adjustment word, and checks the locally derived candidate CRC. CRC precheck also reads Flash directly and verifies both software CRC and DCRA; a host-uploaded SRAM echo is not treated as proof of live Flash.
 
 Each `patch` invocation downloads and executes at most one ECU payload. It never follows a resident RAM payload by immediately opening a second UDS session. After that payload, the script persistently records the completed stage, prints the instruction, and exits successfully. Fully remove vehicle/EPS power, allow discharge, restore stable power, wait for comma to restart, reconnect over SSH, then rerun the same `python3.12 eps_patch.py patch` command. The command resumes only the recorded next safe stage and never retries automatically.
 
@@ -143,7 +143,7 @@ For this exact audited incident history—two `CRC_INDETERMINATE` transitions en
 - `CRC_COMMITTED`: both target and CRC are already complete candidates. No CRC writer runs; perform the requested complete power cycle and rerun `patch` for final read-only CRC/DCRA verification.
 - partial/unknown, identity mismatch, or incomplete live-read: do not run `patch` again. Preserve the evidence and run `restore` only after review; the original `CRC_INDETERMINATE` state remains unchanged.
 
-Never edit, replace, or “repair” an incident's `state.json` manually; the program audits the complete history and advances it atomically. A `WRITE-CRC` or restore summary showing actual CRC sector `0xF8000` is correct and expected: the payload still reads, writes, and returns `0xF8000`, while only the host's internal UDS `FF00` trampoline route uses `0xE0000 / 0x8000`. The operator does not enter or select `0xE0000`.
+Never edit, replace, or “repair” an incident's `state.json` manually; the program audits the complete history and advances it atomically. A `WRITE-TARGET`, `WRITE-CRC`, or restore summary showing actual sector `0x60000` or `0xF8000` is correct and expected: the payload still reads, writes, and returns the displayed actual sector, while every payload shares the host's fixed internal UDS `FF00` trigger range `0xE0000 / 0x8000`. The operator does not enter or select `0xE0000`.
 
 If the one manual CRC rewrite is also `CRC_INDETERMINATE`, every later `patch` is rejected before preflight, Panda connection, or confirmation. Only restore remains. Vehicle DTCs or steering state are not substitutes for complete sector readback.
 

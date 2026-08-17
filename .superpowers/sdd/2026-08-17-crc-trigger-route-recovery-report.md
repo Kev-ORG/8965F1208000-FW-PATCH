@@ -2,10 +2,13 @@
 
 ## Status
 
-Verified offline and ready for controller review. The host now keeps CRC payload
-direction at actual sector `0xF8000` while routing its UDS `FF00` trampoline
-through `0xE0000 / 0x8000`. The exact audited legacy NRC history receives one
-fresh read-only classification before any later manually confirmed writer.
+The final-fix wave is verified offline and awaits independent final re-review;
+this is not a final approval verdict. The host keeps target/CRC payload
+directions at actual sectors `0x60000` and `0xF8000`, while every validated UDS
+`FF00` shellcode trigger uses the single bench-proven `0xE0000 / 0x8000`
+range. The exact audited legacy NRC history receives one fresh read-only
+classification before any later manually confirmed writer, and a final third
+indeterminate writer outcome remains restore-loadable but never patch-resumable.
 
 ## Release commits
 
@@ -17,6 +20,9 @@ fresh read-only classification before any later manually confirmed writer.
 - Review fix round 1 is the commit containing the appended review-fix evidence;
   its authoritative ID is the commit containing this file because a commit
   cannot embed its own hash.
+- The final-fix wave and approved fixed-route amendment are in the commit
+  containing the appended final-fix evidence. Its authoritative ID is likewise
+  the commit containing this file.
 
 ## Task 3 changes
 
@@ -195,7 +201,7 @@ passed the two workflow tests:
 ```
 
 For mutation proof only, production trigger packing was temporarily changed
-from network/big-endian `!II` to little-endian `<II`. The same command produced
+from network/big-endian (`!II`) to little-endian (`<II`). The same command produced
 the intended RED:
 
 ```text
@@ -232,3 +238,50 @@ Fresh post-fix verification:
 `git diff --check` was silent. Test counts did not change. No hardware,
 network, Docker, SSH, Panda, comma, ECU, payload, V850, manifest, FACI,
 production Python, writer behavior, or state semantic change occurred.
+
+## Final-fix wave and approved route amendment
+
+The original direction-specific route discussion above is retained as release
+history. The current approved contract supersedes it: authentication remains
+RAM `0xFEBF0000 / 0x1000`, while every allowed `FF00` payload trigger uses
+`0xE0000 / 0x8000` after operation and actual-sector validation. Target and CRC
+actual/result sectors remain `0x60000` and `0xF8000`; restore requires one of
+those actual bases explicitly.
+
+The same final-fix wave resolves the independent state-audit findings:
+
+- an exact consumed legacy reconciliation followed by one reviewed CRC arm and
+  a final third `CRC_INDETERMINATE` is loadable/selectable by restore only;
+- public restore first performs identity plus one `OP_LIVE_READ`, persists the
+  existing live-precheck checkpoint, and performs no confirmation/writer;
+- public patch rejects that suffix before preflight/transport, and any outgoing
+  `CRC_PRECHECKED` or `CRC_COMMITTED` transition is invalid;
+- pending and consumed exception states bind both reconciliations, PROBED
+  identity/hashes, the exact pinned `live_read`, and a currently reconstructed
+  reviewed writer before preflight;
+- missing, changed, and correlated near misses leave `state.json` unchanged and
+  make zero preflight, transport, or confirmation calls.
+
+Strict RED evidence was `7 failed` for the terminal restore/base cases,
+`18 failed, 16 passed` for trusted evidence, `13 failed, 8 passed` for the
+transport route matrix, and one failed routed target-restore workflow.
+
+Fresh GREEN evidence:
+
+```text
+focused terminal/base: 7 passed in 0.56s
+focused trusted evidence: 34 passed in 2.40s
+focused trigger routes: 21 passed, 21 deselected in 0.03s
+routed end to end: 2 passed in 0.21s
+patch + restore + transport: 226 passed in 7.32s
+focused safety suite: 264 passed in 8.59s
+complete repository: 498 passed in 9.93s
+```
+
+`git diff --check`, `git diff --exit-code cd03e03 -- payload`, and
+`git diff --exit-code 9f34c08 -- payload` were silent and exited zero. The
+complete final-fix evidence and self-review are recorded in
+`.superpowers/sdd/2026-08-17-crc-trigger-route-recovery/final-fix-report.md`.
+No hardware, ECU, Panda, comma, Docker, SSH, network, external service, payload
+build, or operator incident-state operation ran. Independent final re-review is
+still required.

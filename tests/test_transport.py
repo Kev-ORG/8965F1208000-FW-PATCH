@@ -7,7 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from eps_patch.protocol import (
-  OP_RESTORE_SECTOR, OP_WRITE_CRC_CANDIDATE, OP_WRITE_TARGET_CANDIDATE,
+  OP_CRC_INTERMEDIATE, OP_CRC_PROBE, OP_FACI_PE_CYCLE, OP_LIVE_READ,
+  OP_RAM_ECHO, OP_RESTORE_SECTOR, OP_VERIFY_CRC, OP_WRITE_CRC_CANDIDATE,
+  OP_WRITE_TARGET_CANDIDATE,
 )
 
 
@@ -260,14 +262,14 @@ def test_candidate_writer_trigger_rejects_cross_direction_base(operation, base):
 
 
 @pytest.mark.parametrize(
-  ("operation", "actual_base", "trigger_base"),
+  ("operation", "actual_base"),
   (
-    (OP_WRITE_TARGET_CANDIDATE, 0x60000, 0x60000),
-    (OP_WRITE_CRC_CANDIDATE, 0xF8000, 0xE0000),
+    (OP_WRITE_TARGET_CANDIDATE, 0x60000),
+    (OP_WRITE_CRC_CANDIDATE, 0xF8000),
   ),
 )
-def test_candidate_writer_trigger_separates_actual_sector_from_uds_route(
-  operation, actual_base, trigger_base,
+def test_candidate_writer_validates_actual_sector_then_uses_fixed_trigger_route(
+  operation, actual_base,
 ):
   from eps_patch.transport import EcuTransport
 
@@ -276,17 +278,13 @@ def test_candidate_writer_trigger_separates_actual_sector_from_uds_route(
     transport.trigger(
       operation=operation, new_uds=False, sector_base=actual_base,
     )
-  assert calls[0][0][1] == (
-    b"\x31\x01\xff\x00\x45\x00"
-    + struct.pack("!II", trigger_base, 0x8000)
+  assert calls[0][0][1] == bytes.fromhex(
+    "31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"
   )
 
 
-@pytest.mark.parametrize(
-  ("actual_base", "trigger_base"),
-  ((0x60000, 0x60000), (0xF8000, 0xE0000)),
-)
-def test_restore_trigger_separates_actual_sector_from_uds_route(actual_base, trigger_base):
+@pytest.mark.parametrize("actual_base", (0x60000, 0xF8000))
+def test_restore_validates_actual_sector_then_uses_fixed_trigger_route(actual_base):
   from eps_patch.transport import EcuTransport
 
   calls = []
@@ -294,10 +292,60 @@ def test_restore_trigger_separates_actual_sector_from_uds_route(actual_base, tri
     transport.trigger(
       operation=OP_RESTORE_SECTOR, new_uds=False, sector_base=actual_base,
     )
-  assert calls[0][0][1] == (
-    b"\x31\x01\xff\x00\x45\x00"
-    + struct.pack("!II", trigger_base, 0x8000)
+  assert calls[0][0][1] == bytes.fromhex(
+    "31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"
   )
+
+
+def test_actual_sector_differences_cannot_change_fixed_trigger_bytes():
+  from eps_patch.transport import EcuTransport
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    transport.trigger(
+      operation=OP_WRITE_TARGET_CANDIDATE,
+      new_uds=False,
+      sector_base=0x60000,
+    )
+    transport.trigger(
+      operation=OP_WRITE_CRC_CANDIDATE,
+      new_uds=False,
+      sector_base=0xF8000,
+    )
+    transport.trigger(
+      operation=OP_RESTORE_SECTOR,
+      new_uds=False,
+      sector_base=0x60000,
+    )
+    transport.trigger(
+      operation=OP_RESTORE_SECTOR,
+      new_uds=False,
+      sector_base=0xF8000,
+    )
+
+  expected = bytes.fromhex(
+    "31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"
+  )
+  assert [call[0][1] for call in isotp_calls] == [expected] * 4
+
+
+@pytest.mark.parametrize(
+  "operation",
+  (OP_WRITE_TARGET_CANDIDATE, OP_WRITE_CRC_CANDIDATE, OP_RESTORE_SECTOR),
+)
+def test_caller_cannot_supply_an_arbitrary_trigger_base(operation):
+  from eps_patch.transport import EcuTransport, TransportError
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    with pytest.raises(TransportError):
+      transport.trigger(
+        operation=operation,
+        new_uds=False,
+        sector_base=0x70000,
+      )
+
+  assert isotp_calls == []
 
 
 def test_restore_trigger_rejects_uds_route_as_actual_sector():
@@ -310,8 +358,20 @@ def test_restore_trigger_rejects_uds_route_as_actual_sector():
       )
 
 
-def test_live_read_trigger_uses_fixed_default_base_and_rejects_override():
-  from eps_patch.protocol import OP_LIVE_READ
+def test_restore_trigger_rejects_missing_actual_sector():
+  from eps_patch.transport import EcuTransport, TransportError
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    with pytest.raises(TransportError, match="sector base is not allowed"):
+      transport.trigger(
+        operation=OP_RESTORE_SECTOR, new_uds=False, sector_base=None,
+      )
+
+  assert isotp_calls == []
+
+
+def test_live_read_trigger_uses_fixed_bench_route_and_rejects_override():
   from eps_patch.transport import EcuTransport, TransportError
 
   isotp_calls = []
@@ -325,7 +385,9 @@ def test_live_read_trigger_uses_fixed_default_base_and_rejects_override():
       )
 
   assert len(isotp_calls) == 1
-  assert isotp_calls[0][0][1][-8:] == struct.pack("!II", 0x60000, 0x8000)
+  assert isotp_calls[0][0][1] == bytes.fromhex(
+    "31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"
+  )
 
 
 @pytest.mark.parametrize("response", [b"", b"\x10\x04", b"\x21\x04\x02", b"\x20\x00\x01"])
@@ -351,7 +413,6 @@ def test_transport_rejects_payload_before_programming_when_hash_is_wrong():
 
 
 def test_transport_formats_current_isotp_trigger_call():
-  from eps_patch.protocol import OP_FACI_PE_CYCLE
   from eps_patch.transport import EcuTransport
 
   isotp_calls = []
@@ -359,25 +420,30 @@ def test_transport_formats_current_isotp_trigger_call():
     transport.trigger(operation=OP_FACI_PE_CYCLE, new_uds=True)
 
   args, kwargs = isotp_calls[0]
-  assert args[1] == bytes.fromhex("31 01 ff 00 45 01 00 06 00 00 00 00 80 00")
+  assert args[1] == bytes.fromhex("31 01 ff 00 45 01 00 0e 00 00 00 00 80 00")
   assert args[2] == 0x7A1
   assert kwargs == {"bus": 0, "recvaddr": 0x7A9}
 
 
-def test_transport_accepts_pe_cycle_operation_for_the_same_target_route():
-  from eps_patch.protocol import OP_FACI_PE_CYCLE
+def test_transport_accepts_pe_cycle_operation_for_the_fixed_bench_route():
   from eps_patch.transport import EcuTransport
 
   isotp_calls = []
   with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
     transport.trigger(operation=OP_FACI_PE_CYCLE, new_uds=False)
   assert isotp_calls[0][0][1] == bytes.fromhex(
-    "31 01 ff 00 45 00 00 06 00 00 00 00 80 00"
+    "31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"
   )
 
 
-@pytest.mark.parametrize("operation", (7, 9, 10, 11))
-def test_transport_accepts_crc_operation_ids_for_the_same_target_route(operation):
+@pytest.mark.parametrize(
+  "operation",
+  (
+    OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_RAM_ECHO, OP_VERIFY_CRC,
+    OP_CRC_INTERMEDIATE, OP_LIVE_READ,
+  ),
+)
+def test_every_nondestructive_payload_uses_the_fixed_bench_route(operation):
   from eps_patch.transport import EcuTransport
 
   isotp_calls = []
@@ -385,7 +451,7 @@ def test_transport_accepts_crc_operation_ids_for_the_same_target_route(operation
     transport.trigger(operation=operation, new_uds=False)
 
   assert isotp_calls[0][0][1] == bytes.fromhex(
-    "31 01 ff 00 45 00 00 06 00 00 00 00 80 00"
+    "31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"
   )
 
 

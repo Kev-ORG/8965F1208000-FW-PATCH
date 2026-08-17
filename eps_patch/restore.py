@@ -125,6 +125,9 @@ _LEGACY_NRC31_ERROR = (
   "PostTriggerTransportError: post-trigger destructive outcome is indeterminate: "
   "RoutineControl negative response NRC 0x31; raw=037f313100000000"
 )
+_LEGACY_LIVE_READ_ENVELOPE_SHA256 = (
+  "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+)
 
 
 def _legacy_crc_trigger_recovery_status(
@@ -137,6 +140,56 @@ def _legacy_crc_trigger_recovery_status(
     index for index, transition in enumerate(transitions)
     if type(transition) is dict and transition.get("result") == "CRC_INDETERMINATE"
   ]
+  if len(incidents) == 3:
+    _first_index, second_index, third_index = incidents
+    if (
+      third_index != len(transitions) - 1
+      or third_index != second_index + 3
+      or [
+        transition.get("result") if type(transition) is dict else None
+        for transition in transitions[second_index + 1:third_index]
+      ] != ["CRC_PRECHECKED", "CRC_ARMED"]
+      or _legacy_crc_trigger_recovery_status(transitions[:third_index])
+        != "consumed"
+    ):
+      return None
+    probed = next(
+      (
+        transition for transition in transitions[:incidents[0]]
+        if type(transition) is dict and transition.get("result") == "PROBED"
+      ),
+      None,
+    )
+    probed_evidence = probed.get("evidence") if type(probed) is dict else None
+    identity = (
+      probed_evidence.get("identity")
+      if type(probed_evidence) is dict else None
+    )
+    expected_boot_identity = (
+      {
+        "boot_software_id": identity.get("boot_software_id"),
+        "panda_serial": identity.get("panda_serial"),
+      }
+      if type(identity) is dict else None
+    )
+    previous_arm_evidence = transitions[second_index - 1].get("evidence")
+    final_arm_evidence = transitions[third_index - 1].get("evidence")
+    writer_fields = (
+      "operation", "sector_base", "source_sha256", "candidate_sha256",
+      "candidate_crc32", "payload",
+    )
+    if (
+      type(previous_arm_evidence) is not dict
+      or type(final_arm_evidence) is not dict
+      or expected_boot_identity is None
+      or final_arm_evidence.get("identity") != expected_boot_identity
+      or any(
+        final_arm_evidence.get(name) != previous_arm_evidence.get(name)
+        for name in writer_fields
+      )
+    ):
+      return None
+    return "restore-only"
   if len(incidents) != 2:
     return None
   first_index, second_index = incidents
@@ -174,6 +227,30 @@ def _legacy_crc_trigger_recovery_status(
     )
   ):
     return None
+  probed_identity = probed_evidence.get("identity")
+  if (
+    type(probed_identity) is not dict
+    or set(probed_identity) != {
+      "part_number", "application_software_id", "boot_software_id",
+      "panda_serial",
+    }
+    or any(type(value) is not str or not value for value in probed_identity.values())
+    or any(
+      not _is_sha256(probed_evidence.get(name))
+      for name in (
+        "target_source_sha256", "crc_source_sha256",
+        "target_candidate_sha256", "crc_candidate_sha256",
+      )
+    )
+  ):
+    return None
+  expected_boot_identity = {
+    "boot_software_id": probed_identity["boot_software_id"],
+    "panda_serial": probed_identity["panda_serial"],
+  }
+  expected_live_read = {
+    "name": "live_read", "sha256": _LEGACY_LIVE_READ_ENVELOPE_SHA256,
+  }
   if (
     first.get("error") != _LEGACY_UNKNOWN_FRAME_ERROR
     or second.get("error") != _LEGACY_NRC31_ERROR
@@ -184,6 +261,8 @@ def _legacy_crc_trigger_recovery_status(
       != probed_evidence.get("target_candidate_sha256")
     or reconciliation_evidence.get("crc_readback_sha256")
       != probed_evidence.get("crc_source_sha256")
+    or reconciliation_evidence.get("identity") != expected_boot_identity
+    or reconciliation_evidence.get("payload") != expected_live_read
     or arm_evidence.get("operation") != 14
     or arm_evidence.get("sector_base") != "0xf8000"
     or arm_evidence.get("source_sha256") != probed_evidence.get("crc_source_sha256")
@@ -192,6 +271,7 @@ def _legacy_crc_trigger_recovery_status(
     or arm_evidence.get("candidate_crc32")
       != first_arm_evidence.get("candidate_crc32")
     or arm_evidence.get("payload") != first_arm_evidence.get("payload")
+    or arm_evidence.get("identity") != expected_boot_identity
   ):
     return None
   if second_index == len(transitions) - 1:
@@ -222,6 +302,8 @@ def _legacy_crc_trigger_recovery_status(
       "crc_source_sha256" if expected_classification == "source"
       else "crc_candidate_sha256"
     )
+    or evidence.get("identity") != expected_boot_identity
+    or evidence.get("payload") != expected_live_read
   ):
     return None
   return "consumed"
@@ -825,7 +907,7 @@ def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], by
       indeterminate_count += 1
       if (
         indeterminate_count != 1
-        and legacy_recovery != "consumed"
+        and legacy_recovery not in {"consumed", "restore-only"}
         and current["result"] in {"CRC_PRECHECKED", "CRC_COMMITTED"}
       ):
         raise RestoreError("patch state exceeds the one-time CRC retry limit")

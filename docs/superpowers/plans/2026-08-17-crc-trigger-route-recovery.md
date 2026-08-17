@@ -1,5 +1,22 @@
 # CRC Trigger Route Recovery Implementation Plan
 
+## Approved Final-Fix Routing Amendment
+
+This amendment supersedes the direction-specific route choices in the original
+plan below without rewriting that implementation history. Authentication stays
+at RAM `0xFEBF0000 / 0x1000`. `EcuTransport.trigger()` must first retain every
+existing operation and specialized actual-sector validation, including an
+explicit `0x60000` or `0xF8000` actual base for restore, then emit the single
+bench-proven `FF00` range `0xE0000 / 0x8000` for every allowed operation.
+
+The final-fix TDD wave updates transport literals and the routed offline restore
+workflow so target and CRC triggers both equal
+`31 01 ff 00 45 00 00 0e 00 00 00 00 80 00`. It adds a regression proving
+that actual-sector differences cannot change the trigger bytes and retains
+rejections for cross-direction, missing, and arbitrary actual bases. Actual
+payload/result sectors remain `0x60000` and `0xF8000`; no payload, V850, FACI,
+intent, candidate, CRC, binary, manifest, pin, or writer primitive changes.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Separate the UDS `FF00` trampoline range from the payload's actual Flash sector and safely resume the supplied two-indeterminate CRC incident through one fresh read-only classification.

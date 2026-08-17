@@ -207,6 +207,73 @@ def test_patch_state_audit_accepts_completed_legacy_recovery_history(
   assert _legacy_crc_trigger_recovery_status(completed["transitions"]) == "consumed"
 
 
+def test_patch_state_audit_accepts_exact_restore_only_third_indeterminate(tmp_path):
+  from eps_patch.restore import (
+    _legacy_crc_trigger_recovery_status, _load_patch_state,
+  )
+
+  _layout, state_path, *_case = (
+    patch_fx._legacy_crc_trigger_third_indeterminate_case(tmp_path)
+  )
+
+  state, raw = _load_patch_state(state_path, state_path.parent.name)
+
+  assert raw == state_path.read_bytes()
+  assert state["result"] == "CRC_INDETERMINATE"
+  assert state["restore_order"] == ["crc", "target"]
+  assert _legacy_crc_trigger_recovery_status(state["transitions"]) == (
+    "restore-only"
+  )
+
+
+def test_restore_selects_crc_before_target_for_exact_third_indeterminate(tmp_path):
+  from eps_patch.restore import select_restore_plan
+
+  layout, state_path, *_case = (
+    patch_fx._legacy_crc_trigger_third_indeterminate_case(tmp_path)
+  )
+
+  plan = select_restore_plan(layout)
+
+  assert plan.incident_state_path == state_path
+  assert plan.incident_result == "CRC_INDETERMINATE"
+  assert plan.restore_order == ("crc", "target")
+  assert plan.sector_bases == (0xF8000, 0x60000)
+
+
+@pytest.mark.parametrize("successor", ("CRC_PRECHECKED", "CRC_COMMITTED"))
+def test_patch_state_audit_rejects_forward_transition_after_restore_only_suffix(
+  tmp_path, successor,
+):
+  from eps_patch.restore import RestoreError, _load_patch_state
+
+  _layout, state_path, *_case = (
+    patch_fx._legacy_crc_trigger_third_indeterminate_case(tmp_path)
+  )
+  _load_patch_state(state_path, state_path.parent.name)
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  transition = {
+    "sequence": len(state["transitions"]),
+    "result": successor,
+    "recorded_at": state["updated_at"],
+    "evidence": {"forged": "third-indeterminate forward transition"},
+  }
+  state["transitions"].append(transition)
+  state["sequence"] = transition["sequence"]
+  state["result"] = successor
+  state["restore_order"] = (
+    ["target"] if successor == "CRC_PRECHECKED" else ["crc", "target"]
+  )
+  state["power_cycle"] = {
+    "completed_state": successor,
+    "next_state": "CRC_ARMED" if successor == "CRC_PRECHECKED" else "VERIFY_PENDING",
+  }
+  state_path.write_text(json.dumps(state), encoding="utf-8")
+
+  with pytest.raises(RestoreError, match="one-time CRC retry limit"):
+    _load_patch_state(state_path, state_path.parent.name)
+
+
 @pytest.mark.parametrize(
   "mutation",
   (
@@ -834,6 +901,60 @@ def _restore_payloads():
 def _restore_templates():
   build = Path(__file__).resolve().parents[1] / "payload" / "build"
   return {"restore_sector": (build / "restore_sector.bin").read_bytes()}
+
+
+def test_restore_first_invocation_for_third_indeterminate_is_live_read_only(
+  tmp_path,
+):
+  from eps_patch.restore import run_restore
+
+  (
+    layout, _incident_path, target, identity, _target_source, crc_source,
+    target_candidate, _crc_candidate,
+  ) = patch_fx._legacy_crc_trigger_third_indeterminate_case(tmp_path)
+  events = []
+  confirmations = []
+  power_prompts = []
+  boot_identity = BootloaderIdentity(
+    identity.boot_software_id, identity.panda_serial,
+  )
+
+  state_path = run_restore(
+    layout=layout,
+    payloads=_restore_payloads(),
+    templates=_restore_templates(),
+    preflight=lambda: events.append(("preflight",)),
+    transport_factory=lambda: FakeRestoreTransport(
+      "crc-live",
+      events,
+      boot_identity,
+      OP_LIVE_READ,
+      _live_read_result(target_candidate, crc_source),
+    ),
+    confirmation=lambda prompt: confirmations.append(prompt) or prompt,
+    power_cycle_checkpoint=lambda prompt: power_prompts.append(prompt),
+    target=target,
+    new_uds=False,
+  )
+
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert state["result"] == "CRC_LIVE_PRECHECKED"
+  assert state["power_cycle"] == {
+    "completed_state": "CRC_LIVE_PRECHECKED",
+    "next_state": "CRC_ARMED",
+  }
+  assert [event for event in events if event[0] == "crc-live"] == [
+    ("crc-live", "open"),
+    ("crc-live", "identity"),
+    ("crc-live", "payload", OP_LIVE_READ, "live_read"),
+    ("crc-live", "close"),
+  ]
+  assert confirmations == []
+  assert len(power_prompts) == 1
+  assert not any(
+    len(event) > 2 and event[1] == "payload" and event[2] == OP_RESTORE_SECTOR
+    for event in events
+  )
 
 
 def _run_restore(

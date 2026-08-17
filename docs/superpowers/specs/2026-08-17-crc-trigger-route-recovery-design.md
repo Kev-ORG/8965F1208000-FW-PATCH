@@ -1,5 +1,29 @@
 # CRC Trigger Route and Exact Incident Recovery Design
 
+## Approved Final-Fix Amendment: One Bench-Proven FF00 Route
+
+This amendment supersedes the direction-specific trigger-route statements
+retained below as the original design record. The reviewed reference
+`secoc-icanhack/extract_keys.py` and its independent friend script
+`disable-secoc-script/flash_patcher.py` both authenticate the uploaded envelope
+at RAM `0xFEBF0000 / 0x1000`, then trigger `RoutineControl FF00` with the single
+range `0xE0000 / 0x8000`.
+
+`EcuTransport.trigger()` therefore still rejects unknown operations, candidate
+writers whose supplied actual sector does not match their fixed direction, a
+restore without an explicit actual sector, either restore actual sector outside
+`0x60000` and `0xF8000`, and any base override for non-specialized payloads.
+After that validation, every allowed payload operation serializes the same
+`0xE0000 / 0x8000` FF00 range. The actual target/CRC sectors, specialized
+payload intents, returned sector identities, candidate bytes, CRC values, and
+writer primitives remain `0x60000` and `0xF8000` exactly as reviewed.
+
+The old-UDS literal for every trigger is
+`31 01 ff 00 45 00 00 0e 00 00 00 00 80 00`; new UDS changes only the routine
+magic byte pair to `45 01`. Tests must prove that target/CRC actual-sector
+differences cannot affect these trigger bytes and that a caller cannot supply a
+trampoline base as if it were an actual sector.
+
 ## Goal
 
 Repair the host-side trigger routing defect that sent the CRC Flash sector
