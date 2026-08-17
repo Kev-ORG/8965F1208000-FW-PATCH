@@ -640,7 +640,13 @@ def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], by
   return value, raw
 
 
-def _reject_prior_restore(layout: ArtifactLayout, plan: RestorePlan) -> None:
+def _reject_prior_restore(
+  layout: ArtifactLayout,
+  plan: RestorePlan,
+  *,
+  allow_selected_pass: bool = False,
+) -> bool | None:
+  selected_pass = False
   try:
     entries = list(layout.restore_root.iterdir())
   except FileNotFoundError:
@@ -670,10 +676,14 @@ def _reject_prior_restore(layout: ArtifactLayout, plan: RestorePlan) -> None:
       continue
     if state["incident_state_sha256"] == plan.incident_state_sha256:
       if state["result"] == RestoreState.PASS.value:
+        if allow_selected_pass:
+          selected_pass = True
+          continue
         raise RestoreError("the selected patch incident already has a PASS restore")
       raise RestoreError("an already-running restore exists for the selected incident")
     if state["result"] != RestoreState.PASS.value:
       raise RestoreError("an already-running restore exists for a different incident")
+  return selected_pass if allow_selected_pass else None
 
 
 def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:

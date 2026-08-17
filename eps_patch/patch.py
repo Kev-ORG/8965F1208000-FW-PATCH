@@ -194,6 +194,7 @@ def _run_patch_locked(
   )
   patch_payloads = _validate_payloads(payloads, target)
   writer_templates = _validate_templates(templates)
+  _reject_unresolved_patch_incident(layout)
   try:
     trusted = load_probe_pass(layout, target)
   except EvidenceError as exc:
@@ -641,6 +642,27 @@ def _candidate_from_probe(
   ):
     raise PatchError("fixed probe evidence does not produce the exact two-sector candidate")
   return candidate
+
+
+def _reject_unresolved_patch_incident(layout: ArtifactLayout) -> None:
+  """Keep a recoverable failure as the sole permitted destructive workflow."""
+  from .restore import RestoreError, _reject_prior_restore, select_restore_plan
+
+  try:
+    incident = select_restore_plan(layout)
+  except RestoreError as exc:
+    if str(exc) == "no recoverable persisted patch incident exists":
+      return
+    raise PatchError("cannot verify persisted patch incident state") from exc
+  try:
+    if _reject_prior_restore(layout, incident, allow_selected_pass=True):
+      return
+  except RestoreError as exc:
+    raise PatchError("cannot verify persisted restore state") from exc
+  raise PatchError(
+    "unresolved patch incident requires restore before another patch "
+    f"({incident.incident_timestamp})"
+  )
 
 
 def _require_application_identity(

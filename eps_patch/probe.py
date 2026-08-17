@@ -98,6 +98,8 @@ def run_probe(
   if type(new_uds) is not bool or new_uds is not target.new_uds:
     raise ProbeError("probe UDS variant does not match the target")
   payload.validate(target)
+  if layout.probe_directory.exists():
+    raise ProbeError("trusted probe directory already exists")
 
   preflight()
   with transport_factory() as transport:

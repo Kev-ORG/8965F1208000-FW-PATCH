@@ -111,8 +111,16 @@ Full-suite GREEN:
 /Users/kevin/Desktop/disable-secoc/sienna-b4512000-rx-secoc/.venv/bin/python \
   -m pytest -q
 
-358 passed in 1.89s
+343 passed in 1.84s
 ```
+
+Final scope hardening restored the 72 retained strict protocol cases in
+`tests/test_protocol.py` (including the live-read and candidate-writer
+grammars), added no-hardware regression coverage for preflight/transport
+rejection when probe evidence already exists and when a recoverable incident
+is pending. A successful incident-bound restore resolves that gate; malformed
+or indeterminate restore state remains fail-closed. Obsolete protocol
+operations remain excluded by the migration.
 
 ## Retained Restore Payloads
 

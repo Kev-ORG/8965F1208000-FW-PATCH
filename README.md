@@ -36,6 +36,10 @@ the original instruction context, FACI P/E-cycle snapshots, CRC/DCRA checks,
 and host validation. A printed path, a partial artifact, or a successful
 transport connection is not a PASS.
 
+`probe` refuses an existing fixed probe directory before preflight or any
+transport action. Preserve that evidence; it is the recovery snapshot bound to
+the patch workflow.
+
 If `probe` fails, stop and correct the environment or supported-EPS mismatch;
 do not proceed to `patch`. Do not change the stored evidence.
 
@@ -68,6 +72,10 @@ and validates the software CRC/DCRA result. `FAILED` means no writer was
 armed. `TARGET_INDETERMINATE`, `CRC_INDETERMINATE`, and
 `RECOVERY_REQUIRED` mean the persisted state names the minimum recovery scope;
 they are not permission to retry `patch`.
+
+`patch` also refuses to begin while a recoverable persisted patch incident
+lacks a successful bound restore. Restore that incident before a new patch
+attempt.
 
 ## 3. Restore a persisted incident
 

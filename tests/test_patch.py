@@ -344,3 +344,80 @@ def test_patch_failure_persists_restore_plan(
   state = json.loads(state_path.read_text())
   assert state["result"] == expected_result
   assert state["restore_order"] == restore_order
+
+
+def test_patch_rejects_unresolved_incident_before_preflight_or_transport(tmp_path):
+  """A new patch must not obscure an incident whose restore scope is persisted."""
+  from eps_patch.patch import PatchError, run_patch
+
+  _result, state_path, _events, _confirmations = _run_patch(
+    tmp_path, failure_stage="target-armed",
+  )
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target_source = layout.target_backup.read_bytes()
+  target_candidate = bytearray(target_source)
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target = replace(
+    TARGET,
+    original_sha256=hashlib.sha256(target_source).hexdigest(),
+    patched_sha256=hashlib.sha256(target_candidate).hexdigest(),
+  )
+  events = []
+
+  with pytest.raises(PatchError, match="unresolved patch incident"):
+    run_patch(
+      layout=layout,
+      payloads=_payloads(),
+      templates=_templates(),
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport"),
+      confirmation=lambda _prompt: "",
+      power_cycle_checkpoint=lambda _prompt: "",
+      target=target,
+      new_uds=False,
+    )
+
+  assert events == []
+  assert tuple(layout.patch_root.iterdir()) == (state_path.parent,)
+
+
+def test_patch_allows_a_new_attempt_after_the_incident_restore_passes(tmp_path, monkeypatch):
+  """A PASS restore resolves the incident; it must not permanently lock patching."""
+  import eps_patch.restore as restore_module
+  import test_restore as restore_fx
+  from eps_patch.patch import PatchError, run_patch
+
+  monkeypatch.setattr(
+    restore_module,
+    "LIVE_READ_ENVELOPE_SHA256",
+    restore_fx.TEST_LIVE_READ_ENVELOPE_SHA256,
+  )
+  report, _restore_state, _incident, _events, _confirmations, _prompts = (
+    restore_fx._run_restore(tmp_path)
+  )
+  assert report is not None
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target_source = layout.target_backup.read_bytes()
+  target_candidate = bytearray(target_source)
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target = replace(
+    TARGET,
+    original_sha256=hashlib.sha256(target_source).hexdigest(),
+    patched_sha256=hashlib.sha256(target_candidate).hexdigest(),
+  )
+  events = []
+
+  with pytest.raises(PatchError, match="patch stopped in FAILED"):
+    run_patch(
+      layout=layout,
+      payloads=_payloads(),
+      templates=_templates(),
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport"),
+      confirmation=lambda _prompt: "",
+      power_cycle_checkpoint=lambda _prompt: "",
+      target=target,
+      new_uds=False,
+    )
+
+  assert events == ["preflight", "transport"]

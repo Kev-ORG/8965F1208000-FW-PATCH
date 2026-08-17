@@ -198,6 +198,27 @@ def test_probe_rejects_arbitrary_self_declared_payload_before_any_side_effect(pr
   assert not layout.probe_directory.exists()
 
 
+def test_probe_rejects_existing_evidence_before_preflight_or_transport(probe_case):
+  """Replacing evidence would discard the recovery snapshot that patch trusts."""
+  from eps_patch.probe import ProbeError, run_probe
+
+  layout, target, payload, identity, result = probe_case
+  layout.probe_directory.mkdir(parents=True)
+  events = []
+
+  with pytest.raises(ProbeError, match="trusted probe directory already exists"):
+    run_probe(
+      layout=layout,
+      payload=payload,
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport") or FakeTransport(identity, result),
+      target=target,
+      new_uds=False,
+    )
+
+  assert events == []
+
+
 @pytest.mark.parametrize(
   ("mutation", "message"),
   [
