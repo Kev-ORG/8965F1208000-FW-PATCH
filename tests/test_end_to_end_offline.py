@@ -3,7 +3,6 @@
 import binascii
 import hashlib
 import json
-import struct
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -577,8 +576,8 @@ def test_supplied_legacy_crc_incident_uses_one_corrected_route_writer(tmp_path):
   assert len(crc_writer_records) == 1
   assert crc_writer_records[0].actual_base == 0xF8000
   assert crc_writer_records[0].returned_base == 0xF8000
-  assert crc_writer_records[0].trigger_frame == (
-    b"\x31\x01\xff\x00\x45\x00" + struct.pack("!II", 0xE0000, 0x8000)
+  assert crc_writer_records[0].trigger_frame == bytes.fromhex(
+    "31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"
   )
   crc_arms = [
     transition for transition in state["transitions"]
@@ -645,8 +644,8 @@ def test_restore_routes_crc_before_target_after_fresh_live_reads(tmp_path):
   assert [record.actual_base for record in writer_records] == [0xF8000, 0x60000]
   assert [record.returned_base for record in writer_records] == [0xF8000, 0x60000]
   assert [record.trigger_frame for record in writer_records] == [
-    b"\x31\x01\xff\x00\x45\x00" + struct.pack("!II", 0xE0000, 0x8000),
-    b"\x31\x01\xff\x00\x45\x00" + struct.pack("!II", 0x60000, 0x8000),
+    bytes.fromhex("31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"),
+    bytes.fromhex("31 01 ff 00 45 00 00 06 00 00 00 00 80 00"),
   ]
   assert len(confirmations) == 2
   assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")

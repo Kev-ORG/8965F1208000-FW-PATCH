@@ -13,9 +13,10 @@ fresh read-only classification before any later manually confirmed writer.
 - `b58e1fb` — `fix: recover exact rejected CRC trigger incident`
 - `4a2b0b0` — `test: strengthen legacy recovery audit coverage`
 - `de48cf5` — `fix: preserve legacy recovery audit through pass`
-- Task 3 is the commit containing this report with subject
-  `docs: publish CRC trigger recovery procedure`; its authoritative ID is the
-  commit containing this file because a commit cannot embed its own hash.
+- `ebfe3cb` — `docs: publish CRC trigger recovery procedure`
+- Review fix round 1 is the commit containing the appended review-fix evidence;
+  its authoritative ID is the commit containing this file because a commit
+  cannot embed its own hash.
 
 ## Task 3 changes
 
@@ -167,3 +168,67 @@ payload/V850/manifest changes.
 No hardware, ECU, vehicle, Panda, comma, Docker, SSH, network, or external
 service operation ran. All evidence came from local deterministic fakes,
 read-only source/diff inspection, pinned artifacts, and offline pytest suites.
+
+## Review fix round 1: independent raw-frame literals
+
+The formal Task 3 review identified an Important test-quality issue: the
+end-to-end route expectations reconstructed their bytes with
+`struct.pack("!II", ...)`, the same operation used by production transport.
+That could let production and tests share the same endianness or field-layout
+defect.
+
+The three CRC patch, CRC restore, and target restore expectations now use only
+complete hand-derived `bytes.fromhex(...)` literals:
+
+```text
+CRC:    31 01 ff 00 45 00 00 0e 00 00 00 00 80 00
+target: 31 01 ff 00 45 00 00 06 00 00 00 00 80 00
+```
+
+No production file is changed. The now-independent expectations initially
+passed the two workflow tests:
+
+```text
+/Users/kevin/Desktop/disable-secoc/sienna-b4512000-rx-secoc/.venv/bin/python -m pytest tests/test_end_to_end_offline.py::test_supplied_legacy_crc_incident_uses_one_corrected_route_writer tests/test_end_to_end_offline.py::test_restore_routes_crc_before_target_after_fresh_live_reads -q
+..                                                                       [100%]
+2 passed in 0.39s
+```
+
+For mutation proof only, production trigger packing was temporarily changed
+from network/big-endian `!II` to little-endian `<II`. The same command produced
+the intended RED:
+
+```text
+FF                                                                       [100%]
+FAILED tests/test_end_to_end_offline.py::test_supplied_legacy_crc_incident_uses_one_corrected_route_writer
+FAILED tests/test_end_to_end_offline.py::test_restore_routes_crc_before_target_after_fresh_live_reads
+2 failed in 0.41s
+```
+
+The first CRC comparison differed at raw-frame index 7 (`00` versus literal
+`0e`), and restore rejected both wrong-layout frames. The mutation was
+immediately reverted; `git diff --exit-code HEAD -- eps_patch/transport.py`
+was silent. Covering GREEN:
+
+```text
+..                                                                       [100%]
+2 passed in 0.20s
+```
+
+Fresh post-fix verification:
+
+```text
+/Users/kevin/Desktop/disable-secoc/sienna-b4512000-rx-secoc/.venv/bin/python -m pytest tests/test_end_to_end_offline.py -q
+...                                                                      [100%]
+3 passed in 0.28s
+
+/Users/kevin/Desktop/disable-secoc/sienna-b4512000-rx-secoc/.venv/bin/python -m pytest tests/test_transport.py tests/test_patch.py tests/test_restore.py tests/test_restart_resume.py tests/test_end_to_end_offline.py tests/test_candidate_writer_source_contracts.py tests/test_restore_sector_source_contracts.py tests/test_payload_binaries.py -q
+220 passed in 5.28s
+
+/Users/kevin/Desktop/disable-secoc/sienna-b4512000-rx-secoc/.venv/bin/python -m pytest -q
+454 passed in 6.60s
+```
+
+`git diff --check` was silent. Test counts did not change. No hardware,
+network, Docker, SSH, Panda, comma, ECU, payload, V850, manifest, FACI,
+production Python, writer behavior, or state semantic change occurred.
