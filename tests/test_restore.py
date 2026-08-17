@@ -965,6 +965,15 @@ def _write_prior_restore_state(layout, plan, *, result: str) -> Path:
       "STARTED", "TARGET_ECHO_VERIFIED", "TARGET_LIVE_PRECHECKED",
       "TARGET_ARMED", "INDETERMINATE",
     )
+  elif result == "PASS":
+    states = ["STARTED"]
+    for label in plan.restore_order:
+      upper = label.upper()
+      states.extend((
+        f"{upper}_ECHO_VERIFIED", f"{upper}_LIVE_PRECHECKED",
+        f"{upper}_ARMED", f"{upper}_COMMITTED",
+      ))
+    states.append("PASS")
   else:
     states = ("STARTED", result)
   transitions = []
@@ -988,7 +997,8 @@ def _write_prior_restore_state(layout, plan, *, result: str) -> Path:
     "result": result,
     "restore_order": list(plan.restore_order),
     "sector_bases": [f"0x{base:x}" for base in plan.sector_bases],
-    "completed_sector_bases": [],
+    "completed_sector_bases": [f"0x{base:x}" for base in plan.sector_bases]
+    if result == "PASS" else [],
     "created_at": recorded_at,
     "updated_at": recorded_at,
     "incident_timestamp": plan.incident_timestamp,
@@ -998,7 +1008,7 @@ def _write_prior_restore_state(layout, plan, *, result: str) -> Path:
     "automatic_retry": False,
     "external_recovery_required": result == "INDETERMINATE",
     "transitions": transitions,
-    "validation_errors": ["test restore failure"],
+    "validation_errors": [] if result == "PASS" else ["test restore failure"],
   }
   path = prior / "state.json"
   path.write_text(json.dumps(state), encoding="utf-8")

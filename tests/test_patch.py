@@ -431,7 +431,8 @@ def test_patch_rejects_an_older_unresolved_incident_masked_by_a_newer_restore(
   from eps_patch.patch import PatchError, run_patch
   from eps_patch.restore import select_restore_plan
 
-  layout, target, *_case = _probe_case(tmp_path)
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target, *_unused = _case(layout)
   restore_fx._patch_state(
     layout,
     result="TARGET_INDETERMINATE",
