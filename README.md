@@ -56,7 +56,6 @@ rsync -av \
   --exclude='__pycache__/' \
   --exclude='.pytest_cache/' \
   --exclude='tests/' \
-  --exclude='docs/superpowers/' \
   ./ comma@<comma-ip>:/data/eps-patch/app/
 ```
 
@@ -523,7 +522,6 @@ rsync -av \
   --exclude='__pycache__/' \
   --exclude='.pytest_cache/' \
   --exclude='tests/' \
-  --exclude='docs/superpowers/' \
   ./ comma@<comma-ip>:/data/eps-patch/app/
 ```
 

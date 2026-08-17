@@ -213,23 +213,3 @@ def test_readme_keeps_critical_bilingual_values_in_parity():
   ):
     assert english.count(marker) == chinese.count(marker)
     assert english.count(marker) > 0
-
-
-def test_root_cause_document_preserves_the_two_sector_safety_rationale():
-  document = (ROOT / "docs" / "boot-crc-root-cause.md").read_text(
-    encoding="utf-8",
-  )
-
-  for required in (
-    "0x664e6",
-    "0x31",
-    "0x10",
-    "0x60000",
-    "0xf8000",
-    "0xffdec",
-    "crc",
-    "dcra",
-    "0x0962887f",
-    "0x414f47cc",
-  ):
-    assert required in document.lower()

@@ -35,6 +35,34 @@ def test_repository_contains_no_local_or_rebuildable_outputs():
     assert not [path for path in tracked_paths if path.suffix in forbidden_suffixes]
 
 
+def test_public_repository_excludes_internal_docs_and_tool_outputs():
+    tracked_paths = _tracked_repository_paths()
+    forbidden_roots = {"docs", ".superpowers", ".agents", ".codex", "tools"}
+
+    assert not (ROOT / "docs").exists()
+    assert not [
+        path for path in tracked_paths
+        if path.parts and path.parts[0] in forbidden_roots
+    ]
+
+
+def test_gitignore_covers_python_environments_caches_and_local_tools():
+    rules = set((ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
+
+    assert {
+        "__pycache__/",
+        "*.pyc",
+        ".pytest_cache/",
+        ".venv/",
+        "venv/",
+        "env/",
+        "/tools/",
+        "/.superpowers/",
+        "/.agents/",
+        "/.codex/",
+    } <= rules
+
+
 def test_reviewed_primitive_package_is_importable():
   from eps_patch import TARGET
 

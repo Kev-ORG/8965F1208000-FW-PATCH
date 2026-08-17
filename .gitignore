@@ -1,6 +1,10 @@
 .worktrees/
 .DS_Store
+
+# Python caches and local environments
 .venv/
+venv/
+env/
 .pytest_cache/
 __pycache__/
 *.pyc
@@ -8,6 +12,14 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+
+# Local agent and developer tools
+/tools/
+/.superpowers/
+/.agents/
+/.codex/
+
+# Runtime evidence and rebuilt payload intermediates
 /artifacts/
 /payload/build/*
 !/payload/build/
