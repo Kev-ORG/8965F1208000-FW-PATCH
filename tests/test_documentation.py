@@ -32,6 +32,9 @@ def test_readme_documents_the_complete_comma_local_lifecycle():
     "0xFEBF0000",
     "0x1000",
     "32 KiB sector is never uploaded",
+    "at most one ECU payload",
+    "TARGET_PRECHECKED",
+    "CRC_PRECHECKED",
   ):
     assert required in normalized
   for required in (

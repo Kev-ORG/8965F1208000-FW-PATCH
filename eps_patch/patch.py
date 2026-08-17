@@ -82,7 +82,9 @@ _PAYLOAD_DIGESTS = {
 _TEMPLATE_NAMES = ("write_target_candidate", "write_crc_candidate")
 _PATCH_RESUME_NEXT = {
   PatchState.PROBED.value: PatchState.TARGET_PRECHECKED.value,
+  PatchState.TARGET_PRECHECKED.value: PatchState.TARGET_ARMED.value,
   PatchState.TARGET_COMMITTED.value: PatchState.CRC_PRECHECKED.value,
+  PatchState.CRC_PRECHECKED.value: PatchState.CRC_ARMED.value,
   PatchState.CRC_COMMITTED.value: PatchState.VERIFY_PENDING.value,
 }
 
@@ -288,7 +290,11 @@ def _run_patch_locked(
       )
       _persist_sector(directory / "precheck-target-source.bin", precheck_target, target)
       _persist_sector(directory / "precheck-crc-source.bin", precheck_crc, target)
-      recorder.record(
+      checkpoint = PowerCycleCheckpoint(
+        PatchState.TARGET_PRECHECKED.value,
+        PatchState.TARGET_ARMED.value,
+      )
+      path = recorder.record(
         PatchState.TARGET_PRECHECKED,
         evidence={
           "identity": _identity_record(current_identity),
@@ -297,7 +303,11 @@ def _run_patch_locked(
           "target_candidate_crc32": f"0x{target_candidate_crc:08x}",
           "payload": _payload_record(patch_payloads["crc_probe"]),
         },
+        power_cycle=checkpoint,
       )
+      raise _PlannedPowerCycle(path, checkpoint)
+
+    if entry is PatchState.TARGET_PRECHECKED:
       target_intent = CandidateWriterIntent.for_target(
         live_target_crc32=source_target_crc,
         live_crc_crc32=source_crc_crc,
@@ -390,7 +400,11 @@ def _run_patch_locked(
       _persist_sector(
         directory / "intermediate-crc-source.bin", intermediate_crc, target,
       )
-      recorder.record(
+      checkpoint = PowerCycleCheckpoint(
+        PatchState.CRC_PRECHECKED.value,
+        PatchState.CRC_ARMED.value,
+      )
+      path = recorder.record(
         PatchState.CRC_PRECHECKED,
         restore_order=("target",),
         evidence={
@@ -400,7 +414,11 @@ def _run_patch_locked(
           "crc_candidate_crc32": f"0x{crc_candidate_crc:08x}",
           "payload": _payload_record(patch_payloads["crc_intermediate"]),
         },
+        power_cycle=checkpoint,
       )
+      raise _PlannedPowerCycle(path, checkpoint)
+
+    if entry is PatchState.CRC_PRECHECKED:
       crc_intent = CandidateWriterIntent.for_crc(
         live_target_crc32=target_candidate_crc,
         live_crc_crc32=source_crc_crc,

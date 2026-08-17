@@ -40,6 +40,7 @@ def _patch_state(
   result: str,
   restore_order: list[str],
   timestamp: str = "20260817T010203Z",
+  power_cycle: dict[str, str] | None = None,
 ) -> Path:
   directory = layout.patch_attempt(timestamp)
   directory.mkdir(parents=True, exist_ok=False)
@@ -69,6 +70,13 @@ def _patch_state(
     states = (
       "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
       "TARGET_COMMITTED",
+    )
+  elif result == "TARGET_PRECHECKED":
+    states = ("STARTED", "PROBED", "TARGET_PRECHECKED")
+  elif result == "CRC_PRECHECKED":
+    states = (
+      "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+      "TARGET_COMMITTED", "CRC_PRECHECKED",
     )
   elif result == "CRC_COMMITTED":
     states = (
@@ -103,7 +111,7 @@ def _patch_state(
       transition["error"] = "test incident"
     transitions.append(transition)
   state = {
-    "schema": 1,
+    "schema": 2 if power_cycle is not None else 1,
     "workflow": "patch",
     "attempt": timestamp,
     "sequence": len(transitions) - 1,
@@ -121,6 +129,8 @@ def _patch_state(
     "transitions": transitions,
     "validation_errors": [],
   }
+  if power_cycle is not None:
+    state["power_cycle"] = power_cycle
   path = directory / "state.json"
   path.write_text(json.dumps(state), encoding="utf-8")
   return path
@@ -159,6 +169,37 @@ def test_restore_uses_persisted_minimum_safe_order(tmp_path, state, expected):
   _patch_state(layout, **state)
 
   assert select_restore_plan(layout).sector_bases == expected
+
+
+def test_restore_classifies_new_patch_precheck_checkpoints_by_actual_write_scope(
+  tmp_path,
+):
+  from eps_patch.restore import RestoreError, select_restore_plan
+
+  target_layout, *_case = _probe_case(tmp_path / "target")
+  _patch_state(
+    target_layout,
+    result="TARGET_PRECHECKED",
+    restore_order=[],
+    power_cycle={
+      "completed_state": "TARGET_PRECHECKED",
+      "next_state": "TARGET_ARMED",
+    },
+  )
+  with pytest.raises(RestoreError, match="no recoverable"):
+    select_restore_plan(target_layout)
+
+  crc_layout, *_case = _probe_case(tmp_path / "crc")
+  _patch_state(
+    crc_layout,
+    result="CRC_PRECHECKED",
+    restore_order=["target"],
+    power_cycle={
+      "completed_state": "CRC_PRECHECKED",
+      "next_state": "CRC_ARMED",
+    },
+  )
+  assert select_restore_plan(crc_layout).restore_order == ("target",)
 
 
 def test_restore_selects_newest_non_pass_recoverable_incident(tmp_path):

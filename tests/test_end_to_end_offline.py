@@ -268,7 +268,7 @@ class OfflineBench:
     ]
     transports = [_PatchTransport(self.identity, result) for result in results]
     result = None
-    for _invocation in range(4):
+    for _invocation in range(6):
       result = run_patch(
         layout=layout,
         payloads={name: self._payload(name) for name in (

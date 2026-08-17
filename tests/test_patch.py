@@ -259,7 +259,7 @@ def _run_patch(tmp_path, *, failure_stage=None):
     return prompt
 
   result = None
-  for _invocation in range(4):
+  for _invocation in range(6):
     try:
       result = run_patch(
         layout=layout,
@@ -298,10 +298,12 @@ def test_patch_preserves_two_sector_order_confirmations_and_reconnects(tmp_path)
   assert state["result"] == "PASS"
   assert state["restore_order"] == []
   power_prompts = [event[1] for event in events if event[0] == "power"]
-  assert len(power_prompts) == 3
+  assert len(power_prompts) == 5
   assert "PROBED -> TARGET_PRECHECKED" in power_prompts[0]
-  assert "TARGET_COMMITTED -> CRC_PRECHECKED" in power_prompts[1]
-  assert "CRC_COMMITTED -> VERIFY_PENDING" in power_prompts[2]
+  assert "TARGET_PRECHECKED -> TARGET_ARMED" in power_prompts[1]
+  assert "TARGET_COMMITTED -> CRC_PRECHECKED" in power_prompts[2]
+  assert "CRC_PRECHECKED -> CRC_ARMED" in power_prompts[3]
+  assert "CRC_COMMITTED -> VERIFY_PENDING" in power_prompts[4]
   assert [event[0] for event in events if len(event) > 1 and event[1] in {
     "open", "identity", "boot-identity",
   }] == [

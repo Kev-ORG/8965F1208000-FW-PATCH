@@ -40,7 +40,9 @@ Patch 自动读取固定 probe 证据，不接受报告、备份或目录参数�
 
 每次 payload 下载都严格是 `0xFEBF0000` 的 `0x1000`（4 KiB）加密 envelope。32 KiB 扇区绝不会由主机上传到 SRAM：写入前 writer 在 ECU 内从已验证的 Flash 扇区复制到 SRAM，只修改固定的指令字或 CRC 调整字，并在擦写前校验本地生成候选的 CRC。CRC 预检也直接读取 Flash 并验证软件 CRC 与 DCRA；它不再把“主机上传数据的 SRAM 回显”当作 Flash 真实性证明。
 
-每个计划性断电点，脚本会持久化完成阶段、打印提示并退出。完整断开车辆/EPS 电源、等待放电、恢复稳定供电并让 comma 重启；重新 SSH 后再次运行同一条 `python3.12 eps_patch.py patch`。脚本只继续该 attempt 的下一安全阶段。成功流程在 `PROBED`、`TARGET_COMMITTED`、`CRC_COMMITTED` 后需要完整断电；UDS reset 不能代替断电。
+一次 `patch` 命令最多下载并执行一个 ECU payload，绝不会在一个已经驻留 RAM payload 的 UDS 会话后立即打开第二个 UDS 会话。每个 payload 之后，脚本会先持久化完成阶段、打印提示并正常退出。完整断开车辆/EPS 电源、等待放电、恢复稳定供电并让 comma 重启；重新 SSH 后再次运行同一条 `python3.12 eps_patch.py patch`。脚本只继续该 attempt 的下一安全阶段，绝不会自动重试。
+
+成功流程共有五个计划性断电点：`PROBED → TARGET_PRECHECKED`、`TARGET_PRECHECKED → TARGET_ARMED`、`TARGET_COMMITTED → CRC_PRECHECKED`、`CRC_PRECHECKED → CRC_ARMED`、`CRC_COMMITTED → VERIFY_PENDING`。其中两个 `*_PRECHECKED` 阶段只完成只读 CRC/DCRA 检查，没有 arm writer；下一次重新运行才会显示精确确认并执行对应 writer。UDS reset 不能代替完整断电。
 
 writer 前会显示 `WRITE-TARGET` 或 `WRITE-CRC` 精确确认文本。核对地址、source、candidate、CRC 和 envelope 后逐字输入；任何差异都会在 writer arm 前停止。最终 PASS 表示独立回读精确匹配候选并通过 CRC/DCRA 验证。`TARGET_INDETERMINATE`、`CRC_INDETERMINATE`、`RECOVERY_REQUIRED` 时禁止再次 patch，改运行 restore。
 
@@ -52,7 +54,7 @@ python3.12 eps_patch.py restore
 
 Restore 自动发现本机可恢复 incident，只使用固定 probe 目录绑定的原厂备份。两个扇区可能受影响时固定先恢复 CRC `0xf8000`、再恢复目标 `0x60000`。每个 writer arm 前，脚本都用只读 live-read payload 重新读取两扇区，并核对 incident 范围、备份和候选状态。
 
-Restore 的计划性断电同样是“保存阶段并退出 → 完整断电 → comma 重启 → 再运行同一条 `restore`”。每次写入前输入显示的精确 `RESTORE-SECTOR` 确认文本。若出现 `INDETERMINATE`、未知 live 状态、确认失败或 writer/readback 通信错误，停止；不要重试 patch 或 restore，应保留证据并采用外部编程器或专业恢复方式。
+Restore 的计划性断电同样是“保存阶段并退出 → 完整断电 → comma 重启 → 再运行同一条 `restore`”。一次命令最多执行一个 ECU payload：一次只读 live-read 与下一次 writer 永远分开，两个扇区之间也会保存阶段并退出。每次写入前输入显示的精确 `RESTORE-SECTOR` 确认文本。若出现 `INDETERMINATE`、未知 live 状态、确认失败或 writer/readback 通信错误，停止；不要重试 patch 或 restore，应保留证据并采用外部编程器或专业恢复方式。
 
 ## 安全措施与设计
 
@@ -95,7 +97,9 @@ Patch reads only the fixed probe evidence; it accepts no report, backup, or arti
 
 Every payload download is exactly one encrypted `0x1000` (4 KiB) envelope at `0xFEBF0000`. The 32 KiB sector is never uploaded from the host to SRAM: before erasing, the writer copies the verified live Flash sector into ECU SRAM, changes only the fixed instruction word or CRC adjustment word, and checks the locally derived candidate CRC. CRC precheck also reads Flash directly and verifies both software CRC and DCRA; a host-uploaded SRAM echo is not treated as proof of live Flash.
 
-At every planned complete power cycle, the script persistently records the completed stage, prints the instruction, and exits. Fully remove vehicle/EPS power, allow discharge, restore stable power, wait for comma to restart, reconnect over SSH, then rerun the same `python3.12 eps_patch.py patch` command. The command resumes only the recorded next safe stage. A UDS reset is not a complete power cycle. A successful patch has planned cycles after `PROBED`, `TARGET_COMMITTED`, and `CRC_COMMITTED`.
+Each `patch` invocation downloads and executes at most one ECU payload. It never follows a resident RAM payload by immediately opening a second UDS session. After that payload, the script persistently records the completed stage, prints the instruction, and exits successfully. Fully remove vehicle/EPS power, allow discharge, restore stable power, wait for comma to restart, reconnect over SSH, then rerun the same `python3.12 eps_patch.py patch` command. The command resumes only the recorded next safe stage and never retries automatically.
+
+A successful patch has five planned complete-power-cycle boundaries: `PROBED → TARGET_PRECHECKED`, `TARGET_PRECHECKED → TARGET_ARMED`, `TARGET_COMMITTED → CRC_PRECHECKED`, `CRC_PRECHECKED → CRC_ARMED`, and `CRC_COMMITTED → VERIFY_PENDING`. The two `*_PRECHECKED` stages perform only read-only CRC/DCRA checks and do not arm a writer; the following invocation displays the exact confirmation and runs that writer. A UDS reset is not a complete power cycle.
 
 Before each writer, inspect the displayed sector, source, candidate, CRC, and envelope values. Enter the exact displayed `WRITE-TARGET` or `WRITE-CRC` confirmation; any changed, abbreviated, or extra character stops before writer arm. Final PASS means independent readback exactly matches both candidates and validates CRC/DCRA. `TARGET_INDETERMINATE`, `CRC_INDETERMINATE`, and `RECOVERY_REQUIRED` never authorize another patch: use restore instead.
 
@@ -109,7 +113,7 @@ python3.12 eps_patch.py restore
 
 Restore has no path, backup, or incident selector. It discovers the local recoverable incident and uses only the probe-bound original backups. If both sectors can be affected, it restores the CRC sector (`0xf8000`) first, then the target sector (`0x60000`). Before every writer arm, the read-only live-read payload reads both sectors again and checks the incident scope, backups, and candidate states.
 
-Restore checkpoints use the same persist-exit-reboot-rerun model: complete the requested vehicle/EPS power cycle, wait for comma to restart, reconnect, and rerun the same `python3.12 eps_patch.py restore` command. Before a writer, enter the exact displayed `RESTORE-SECTOR` confirmation.
+Restore checkpoints use the same persist-exit-reboot-rerun model: complete the requested vehicle/EPS power cycle, wait for comma to restart, reconnect, and rerun the same `python3.12 eps_patch.py restore` command. Each invocation executes at most one ECU payload: a read-only live-read and its following writer are always separate invocations, and the script also exits between sectors. Before a writer, enter the exact displayed `RESTORE-SECTOR` confirmation.
 
 On unknown live state, `INDETERMINATE`, failed confirmation, or writer/readback communication failure, stop. Do not retry patch or restore. Keep the evidence and use an external programmer or professional recovery method.
 

@@ -113,7 +113,7 @@ def test_patch_persists_before_emitting_the_first_restart_instruction(tmp_path):
 
 
 def test_patch_resumes_one_stage_per_manual_rerun_in_the_same_attempt(tmp_path):
-  """Starting over or crossing two cycle boundaries in one run is unsafe."""
+  """One invocation must never run a precheck and its writer back-to-back."""
   from eps_patch.patch import run_patch
 
   layout = ArtifactLayout(tmp_path / "artifacts")
@@ -153,15 +153,27 @@ def test_patch_resumes_one_stage_per_manual_rerun_in_the_same_attempt(tmp_path):
   assert state["result"] == "PROBED"
   assert checkpoint["next_state"] == "TARGET_PRECHECKED"
 
-  transports.extend((
+  transports.append(
     patch_fx.FakeTransport("target-precheck", events, identity, results.pop(0)),
-    patch_fx.FakeTransport("target-writer", events, identity, results.pop(0)),
-  ))
+  )
   events.clear()
   assert invoke() == state_path
-  assert [event for event in events if event == "transport"] == [
-    "transport", "transport",
-  ]
+  assert events.count("transport") == 1
+  assert "confirmation" not in events
+  state, checkpoint = _checkpoint(state_path)
+  assert state["result"] == "TARGET_PRECHECKED"
+  assert checkpoint == {
+    "completed_state": "TARGET_PRECHECKED",
+    "next_state": "TARGET_ARMED",
+  }
+
+  transports.append(
+    patch_fx.FakeTransport("target-writer", events, identity, results.pop(0)),
+  )
+  events.clear()
+  assert invoke() == state_path
+  assert events.count("transport") == 1
+  assert events.count("confirmation") == 1
   state, checkpoint = _checkpoint(state_path)
   assert state["result"] == "TARGET_COMMITTED"
   assert checkpoint == {
@@ -169,12 +181,27 @@ def test_patch_resumes_one_stage_per_manual_rerun_in_the_same_attempt(tmp_path):
     "next_state": "CRC_PRECHECKED",
   }
 
-  transports.extend((
+  transports.append(
     patch_fx.FakeTransport("crc-precheck", events, identity, results.pop(0), boot=True),
-    patch_fx.FakeTransport("crc-writer", events, identity, results.pop(0), boot=True),
-  ))
+  )
   events.clear()
   assert invoke() == state_path
+  assert events.count("transport") == 1
+  assert "confirmation" not in events
+  state, checkpoint = _checkpoint(state_path)
+  assert state["result"] == "CRC_PRECHECKED"
+  assert checkpoint == {
+    "completed_state": "CRC_PRECHECKED",
+    "next_state": "CRC_ARMED",
+  }
+
+  transports.append(
+    patch_fx.FakeTransport("crc-writer", events, identity, results.pop(0), boot=True),
+  )
+  events.clear()
+  assert invoke() == state_path
+  assert events.count("transport") == 1
+  assert events.count("confirmation") == 1
   state, checkpoint = _checkpoint(state_path)
   assert state["result"] == "CRC_COMMITTED"
   assert checkpoint == {
@@ -187,6 +214,8 @@ def test_patch_resumes_one_stage_per_manual_rerun_in_the_same_attempt(tmp_path):
   )
   events.clear()
   report_path = invoke()
+  assert events.count("transport") == 1
+  assert "confirmation" not in events
   assert report_path.name == "patch-report.json"
   assert json.loads(report_path.read_text(encoding="utf-8"))["result"] == "PASS"
   assert results == []
@@ -215,7 +244,7 @@ def test_patch_writer_commit_stays_resumable_when_instruction_output_fails(tmp_p
   def emit(_prompt):
     nonlocal outputs
     outputs += 1
-    if outputs == 2:
+    if outputs == 3:
       raise RuntimeError("stdout unavailable after target commit")
 
   arguments = {
@@ -230,6 +259,7 @@ def test_patch_writer_commit_stays_resumable_when_instruction_output_fails(tmp_p
     "new_uds": False,
   }
   state_path = run_patch(**arguments)
+  assert run_patch(**arguments) == state_path
   with pytest.raises(RuntimeError, match="stdout unavailable after target commit"):
     run_patch(**arguments)
 
@@ -304,6 +334,10 @@ def test_pass_restore_supersedes_paused_patch_by_timestamp_after_hash_change(tmp
     "new_uds": False,
   }
   first_state = run_patch(**arguments)
+  paused_state = run_patch(**arguments)
+  assert json.loads(paused_state.read_text(encoding="utf-8"))["result"] == (
+    "TARGET_PRECHECKED"
+  )
   paused_state = run_patch(**arguments)
   assert json.loads(paused_state.read_text(encoding="utf-8"))["result"] == (
     "TARGET_COMMITTED"
