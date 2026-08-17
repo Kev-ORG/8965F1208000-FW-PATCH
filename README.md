@@ -58,11 +58,13 @@ writer 前会先单独显示完整的 `WRITE-TARGET` 或 `WRITE-CRC` 交易摘�
 python3.12 eps_patch.py patch
 ```
 
-这次命令只运行已审查的只读 `live_read`，完整读取 target 与 CRC 两个 32 KiB 扇区，逐字节与固定 source/candidate 比较；它不会进入 FACI P/E，也不会显示 `YES`：
+对于本次已审计的两次 `CRC_INDETERMINATE`、最终 NRC `0x31` 且 raw frame 为 `037f313100000000` 的精确事故历史，更新后的第一次 `patch` 命令只运行已审查的只读 `live_read`。它完整读取 target 与 CRC 两个 32 KiB 扇区，逐字节与固定 source/candidate 比较；不会进入 FACI P/E、不会显示 `YES`，也不会根据 NRC 文本直接授权 writer：
 
 - 输出/状态为 `CRC_PRECHECKED`：target 完整等于候选、CRC 完整等于原始 source。按提示完整断电重启，再运行 `patch`；核对 `WRITE-CRC` 后输入大写 `YES`，只允许这一次人工重写。
 - 输出/状态为 `CRC_COMMITTED`：target 和 CRC 都已完整等于候选。脚本不会再次写 CRC；按提示完整断电重启，再运行 `patch` 完成最终只读 CRC/DCRA 验证。
-- 报告 partial/unknown、身份不符或 live-read 不完整：不要再次运行 `patch`，运行 `restore`。原 `CRC_INDETERMINATE` state 保持不变。
+- 报告 partial/unknown、身份不符或 live-read 不完整：不要再次运行 `patch`；保留证据并完成审查后，才运行 `restore`。原 `CRC_INDETERMINATE` state 保持不变。
+
+绝对不要手动编辑、替换或“修复”事故目录中的 `state.json`；程序会校验完整历史并原子推进状态。`WRITE-CRC` 或 restore 摘要显示实际 CRC 扇区 `0xF8000` 是正确且预期的：payload 内部仍读写并回传 `0xF8000`，只有主机内部的 UDS `FF00` trampoline route 使用 `0xE0000 / 0x8000`。操作员不输入或选择 `0xE0000`。
 
 若那一次人工 CRC 重写仍变成 `CRC_INDETERMINATE`，以后所有 `patch` 都会在 preflight、Panda 连接和确认之前拒绝；只能进入 restore。车辆故障码或转向状态不能代替完整扇区回读。
 
@@ -135,11 +137,13 @@ After installing the corrected code, fully power-cycle the vehicle/EPS and comma
 python3.12 eps_patch.py patch
 ```
 
-This invocation runs only the reviewed read-only `live_read` payload. It reads both complete 32 KiB sectors and compares every byte with the fixed source and candidate. It never enters FACI P/E and never prompts for `YES`:
+For this exact audited incident history—two `CRC_INDETERMINATE` transitions ending with NRC `0x31` and raw frame `037f313100000000`—the first post-update `patch` command runs only the reviewed read-only `live_read` payload. It reads both complete 32 KiB sectors and compares every byte with the fixed source and candidate. It never enters FACI P/E, never prompts for `YES`, and never authorizes a writer from NRC text alone:
 
 - `CRC_PRECHECKED`: target is the complete candidate and CRC is the complete source. Perform the requested complete power cycle, rerun `patch`, inspect `WRITE-CRC`, and type exact uppercase `YES`. This is the one permitted manual rewrite.
 - `CRC_COMMITTED`: both target and CRC are already complete candidates. No CRC writer runs; perform the requested complete power cycle and rerun `patch` for final read-only CRC/DCRA verification.
-- partial/unknown, identity mismatch, or incomplete live-read: do not run `patch` again. Run `restore`; the original `CRC_INDETERMINATE` state remains unchanged.
+- partial/unknown, identity mismatch, or incomplete live-read: do not run `patch` again. Preserve the evidence and run `restore` only after review; the original `CRC_INDETERMINATE` state remains unchanged.
+
+Never edit, replace, or “repair” an incident's `state.json` manually; the program audits the complete history and advances it atomically. A `WRITE-CRC` or restore summary showing actual CRC sector `0xF8000` is correct and expected: the payload still reads, writes, and returns `0xF8000`, while only the host's internal UDS `FF00` trampoline route uses `0xE0000 / 0x8000`. The operator does not enter or select `0xE0000`.
 
 If the one manual CRC rewrite is also `CRC_INDETERMINATE`, every later `patch` is rejected before preflight, Panda connection, or confirmation. Only restore remains. Vehicle DTCs or steering state are not substitutes for complete sector readback.
 
