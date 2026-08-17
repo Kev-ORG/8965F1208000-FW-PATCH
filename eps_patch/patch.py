@@ -30,6 +30,7 @@ from .power import PowerCycleCheckpoint, request_power_cycle
 from .protocol import (
   CrcObservation,
   OP_CRC_INTERMEDIATE,
+  OP_LIVE_READ,
   OP_CRC_PROBE,
   OP_VERIFY_CRC,
   OP_WRITE_CRC_CANDIDATE,
@@ -50,6 +51,9 @@ CRC_INTERMEDIATE_ENVELOPE_SHA256 = (
 )
 CRC_VERIFY_ENVELOPE_SHA256 = (
   "99c69ca2bbec2eac594349cf375d4a917c61acff18a412cc72031871776cb27e"
+)
+LIVE_READ_ENVELOPE_SHA256 = (
+  "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
 )
 
 
@@ -78,6 +82,7 @@ _PAYLOAD_DIGESTS = {
   "crc_probe": CRC_PROBE_ENVELOPE_SHA256,
   "crc_intermediate": CRC_INTERMEDIATE_ENVELOPE_SHA256,
   "crc_verify": CRC_VERIFY_ENVELOPE_SHA256,
+  "live_read": LIVE_READ_ENVELOPE_SHA256,
 }
 _TEMPLATE_NAMES = ("write_target_candidate", "write_crc_candidate")
 _PATCH_RESUME_NEXT = {
@@ -830,6 +835,35 @@ def _regions(
 
 def _crc_record_values(observation: CrcObservation) -> tuple[int, ...]:
   return tuple(getattr(observation, field.name) for field in fields(CrcObservation))
+
+
+def _validate_crc_reconciliation(
+  result: object,
+  candidate: CrcCandidate,
+  target: TargetManifest,
+) -> str:
+  target_live, crc_live = _regions(result, target, "CRC reconciliation")
+  if (
+    result.operation != OP_LIVE_READ
+    or result.sector is not None
+    or result.magic_words != (target.magic_word, target.magic_word)
+    or result.statuses != ((1, 0),)
+    or result.faci_values
+    or result.crc_values
+    or result.crc is not None
+    or result.dcra_values
+    or result.dcra is not None
+  ):
+    raise PatchError("CRC reconciliation live-read contract is not exact")
+  if target_live != candidate.target_final:
+    raise PatchError("CRC reconciliation target sector is not the exact candidate")
+  if crc_live == candidate.crc_source:
+    return "source"
+  if crc_live == candidate.crc_final:
+    return "candidate"
+  raise PatchError(
+    "CRC reconciliation found a partial or unknown CRC sector; restore is required"
+  )
 
 
 def _validate_crc_structure(

@@ -14,6 +14,7 @@ from eps_patch.paths import ArtifactLayout
 from eps_patch.protocol import (
   CrcObservation,
   OP_CRC_INTERMEDIATE,
+  OP_LIVE_READ,
   OP_CRC_PROBE,
   OP_VERIFY_CRC,
   OP_WRITE_CRC_CANDIDATE,
@@ -28,6 +29,9 @@ import test_evidence as evidence_fx
 
 OLD_ADJUSTMENT = TARGET.crc_original_adjust_word.to_bytes(4, "little")
 NEW_ADJUSTMENT = TARGET.crc_patched_adjust_word.to_bytes(4, "little")
+LIVE_READ_ENVELOPE_SHA256 = (
+  "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+)
 
 
 def _case(layout: ArtifactLayout):
@@ -118,6 +122,19 @@ def _writer_result(operation, sector_base, sector):
   )
 
 
+def _live_read_result(target_sector, crc_sector):
+  return StreamResult(
+    operation=OP_LIVE_READ,
+    sector=None,
+    magic_words=(TARGET.magic_word, TARGET.magic_word),
+    statuses=((1, 0),),
+    regions=(
+      RegionResult(TARGET.sector_base, target_sector),
+      RegionResult(TARGET.crc_sector_base, crc_sector),
+    ),
+  )
+
+
 class FakeTransport:
   def __init__(self, label, events, identity, result, *, failure=None, boot=False):
     self.label = label
@@ -162,6 +179,7 @@ def _payloads():
     "crc_probe": CRC_PROBE_ENVELOPE_SHA256,
     "crc_intermediate": CRC_INTERMEDIATE_ENVELOPE_SHA256,
     "crc_verify": CRC_VERIFY_ENVELOPE_SHA256,
+    "live_read": LIVE_READ_ENVELOPE_SHA256,
   }
   payloads = {}
   for name, digest in digests.items():
@@ -172,6 +190,91 @@ def _payloads():
     assert hashlib.sha256(envelope).hexdigest() == digest
     payloads[name] = SimpleNamespace(name=name, envelope=envelope, sha256=digest)
   return payloads
+
+
+def test_patch_requires_the_exact_reviewed_live_read_payload(tmp_path):
+  from eps_patch.patch import PatchError, _validate_payloads
+
+  target, *_case_values = _case(ArtifactLayout(tmp_path / "artifacts"))
+  payloads = _payloads()
+  payloads.pop("live_read")
+
+  with pytest.raises(PatchError, match="missing live_read"):
+    _validate_payloads(payloads, target)
+
+
+@pytest.mark.parametrize(
+  ("crc_state", "expected"),
+  (("source", "source"), ("candidate", "candidate")),
+)
+def test_crc_reconciliation_classifies_only_complete_exact_sectors(
+  tmp_path, crc_state, expected,
+):
+  from eps_patch.crc import build_crc_candidate
+  from eps_patch.patch import _validate_crc_reconciliation
+
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target, _identity, target_source, crc_source, target_candidate, crc_candidate = (
+    _case(layout)
+  )
+  candidate = build_crc_candidate(
+    target_source, crc_source, NEW_ADJUSTMENT, target=target,
+  )
+  crc_live = {"source": crc_source, "candidate": crc_candidate}[crc_state]
+
+  assert _validate_crc_reconciliation(
+    _live_read_result(target_candidate, crc_live), candidate, target,
+  ) == expected
+
+
+@pytest.mark.parametrize(
+  "mutation",
+  (
+    "partial-crc", "wrong-target", "wrong-operation", "wrong-magic",
+    "wrong-base", "wrong-length", "faci", "crc-records", "dcra-records",
+  ),
+)
+def test_crc_reconciliation_rejects_every_nonexact_live_read(tmp_path, mutation):
+  from eps_patch.crc import build_crc_candidate
+  from eps_patch.patch import PatchError, _validate_crc_reconciliation
+
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target, _identity, target_source, crc_source, target_candidate, _crc_candidate = (
+    _case(layout)
+  )
+  candidate = build_crc_candidate(
+    target_source, crc_source, NEW_ADJUSTMENT, target=target,
+  )
+  result = _live_read_result(target_candidate, crc_source)
+  if mutation == "partial-crc":
+    partial = bytearray(crc_source)
+    partial[0x1234] ^= 1
+    result = _live_read_result(target_candidate, bytes(partial))
+  elif mutation == "wrong-target":
+    result = _live_read_result(target_source, crc_source)
+  elif mutation == "wrong-operation":
+    result = replace(result, operation=OP_CRC_INTERMEDIATE)
+  elif mutation == "wrong-magic":
+    result = replace(result, magic_words=(TARGET.magic_word, 0))
+  elif mutation == "wrong-base":
+    result = replace(result, regions=(
+      RegionResult(TARGET.crc_sector_base, target_candidate),
+      RegionResult(TARGET.sector_base, crc_source),
+    ))
+  elif mutation == "wrong-length":
+    result = replace(result, regions=(
+      RegionResult(TARGET.sector_base, target_candidate[:-1]),
+      RegionResult(TARGET.crc_sector_base, crc_source),
+    ))
+  elif mutation == "faci":
+    result = replace(result, faci_values=(1,))
+  elif mutation == "crc-records":
+    result = replace(result, crc_values=(1,))
+  elif mutation == "dcra-records":
+    result = replace(result, dcra_values=(1,))
+
+  with pytest.raises(PatchError, match="CRC reconciliation"):
+    _validate_crc_reconciliation(result, candidate, target)
 
 
 def _templates():
