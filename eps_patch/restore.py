@@ -699,11 +699,6 @@ def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], by
     transitions[-1]["result"] != value["result"]
     or transitions[0]["recorded_at"] != value["created_at"]
     or transitions[-1]["recorded_at"] != value["updated_at"]
-    or any(
-      datetime.fromisoformat(current["recorded_at"])
-        < datetime.fromisoformat(previous["recorded_at"])
-      for previous, current in zip(transitions, transitions[1:])
-    )
   ):
     raise RestoreError("patch state transition history contradicts its summary")
   return value, raw
@@ -940,11 +935,6 @@ def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
     transitions[-1]["result"] != result
     or transitions[0]["recorded_at"] != state["created_at"]
     or transitions[-1]["recorded_at"] != state["updated_at"]
-    or any(
-      datetime.fromisoformat(current["recorded_at"])
-        < datetime.fromisoformat(previous["recorded_at"])
-      for previous, current in zip(transitions, transitions[1:])
-    )
     or state["completed_sector_bases"] != committed
     or state["external_recovery_required"] != (result == "INDETERMINATE")
     or (

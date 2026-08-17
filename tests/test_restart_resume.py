@@ -223,6 +223,84 @@ def test_patch_resumes_one_stage_per_manual_rerun_in_the_same_attempt(tmp_path):
   assert len(tuple(layout.patch_root.iterdir())) == 1
 
 
+def test_patch_resume_uses_checkpoint_not_wall_clock_order(tmp_path, monkeypatch):
+  """A rebooted comma clock must not invalidate an exact persisted checkpoint."""
+  import eps_patch.patch as patch_module
+
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target, identity, target_source, crc_source, target_candidate, crc_candidate = (
+    patch_fx._case(layout)
+  )
+  results = list(_patch_results(
+    target, target_source, crc_source, target_candidate, crc_candidate,
+  ))
+  events = []
+  transports = [
+    patch_fx.FakeTransport("target-precheck", events, identity, results.pop(0)),
+    patch_fx.FakeTransport("target-writer", events, identity, results.pop(0)),
+    patch_fx.FakeTransport(
+      "crc-precheck", events, identity, results.pop(0), boot=True,
+    ),
+  ]
+  wall_times = iter((
+    "2025-11-25T18:18:09.148181+00:00",
+    "2025-11-25T18:18:09.757243+00:00",
+    "2025-11-25T18:18:11.572274+00:00",
+    "2025-11-25T18:17:54.161245+00:00",
+    "2025-11-25T18:18:03.042569+00:00",
+    "2025-11-25T18:18:12.000000+00:00",
+  ))
+  monkeypatch.setattr(patch_module, "_now", lambda: next(wall_times))
+
+  def invoke():
+    return patch_module.run_patch(
+      layout=layout,
+      payloads=patch_fx._payloads(),
+      templates=patch_fx._templates(),
+      preflight=lambda: None,
+      transport_factory=lambda: transports.pop(0),
+      confirmation=lambda prompt: prompt,
+      power_cycle_checkpoint=lambda _prompt: None,
+      target=target,
+      new_uds=False,
+    )
+
+  state_path = invoke()
+  state_path = invoke()
+  state_path = invoke()
+  state_path = invoke()
+
+  state, checkpoint = _checkpoint(state_path)
+  assert state["result"] == "CRC_PRECHECKED"
+  assert checkpoint == {
+    "completed_state": "CRC_PRECHECKED",
+    "next_state": "CRC_ARMED",
+  }
+  assert transports == []
+
+
+def test_restore_state_audit_time_does_not_authorize_resume(tmp_path, monkeypatch):
+  """Restore validity comes from sequence/checkpoints, not reboot wall time."""
+  import eps_patch.restore as restore_module
+
+  monkeypatch.setattr(
+    restore_module,
+    "LIVE_READ_ENVELOPE_SHA256",
+    restore_fx.TEST_LIVE_READ_ENVELOPE_SHA256,
+  )
+  report, state_path, _incident, _events, _confirmations, _powers = (
+    restore_fx._run_restore(tmp_path, order=("target",))
+  )
+  assert report is not None
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  state["transitions"][2]["recorded_at"] = "2025-11-25T18:17:54.161245+00:00"
+  state_path.write_text(json.dumps(state), encoding="utf-8")
+
+  assert restore_module._load_restore_state(
+    state_path, state_path.parent.name,
+  ) == state
+
+
 def test_patch_writer_commit_stays_resumable_when_instruction_output_fails(tmp_path):
   """Output loss after exact writer PASS must not turn into writer uncertainty."""
   from eps_patch.patch import run_patch
