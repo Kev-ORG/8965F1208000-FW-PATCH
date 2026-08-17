@@ -301,20 +301,26 @@ class EcuTransport:
       raise TransportError("stream timeout must be positive")
     collector = StreamCollector(expected_operation=operation)
     deadline = time.monotonic() + timeout
-    response_pending = b"\x03\x7f\x31\x78\x00\x00\x00\x00"
     while time.monotonic() < deadline:
       for can_id, data, bus in panda.can_recv():
         if can_id != TARGET.uds_response_id or bus != TARGET.bus:
           continue
         frame = bytes(data)
-        if frame == response_pending:
-          continue
+        if len(frame) == 8 and frame[0] == 0x03 and frame[1:3] == b"\x7f\x31":
+          nrc = frame[3]
+          if nrc == 0x78:
+            continue
+          raise TransportError(
+            f"RoutineControl negative response NRC 0x{nrc:02x}; raw={frame.hex()}"
+          )
         try:
           collector.consume(can_id, bus, frame)
           if frame[0] == FrameType.END:
             return collector.finish()
         except ProtocolError as exc:
-          raise TransportError(f"invalid payload stream: {exc}") from exc
+          raise TransportError(
+            f"invalid payload stream: {exc}; raw={frame.hex()}"
+          ) from exc
     raise TransportError(f"timed out waiting for payload stream after {timeout:.1f}s")
 
   def run_payload(self, image: Any, *, operation: int, new_uds: bool) -> StreamResult:

@@ -380,11 +380,9 @@ def test_failed_session_transition_is_not_slept_or_retried():
   assert events == [("session", 1)]
 
 
-def test_transport_collects_ram_echo_as_one_exact_sram_region():
+def _ram_echo_frames(sector):
   from eps_patch.protocol import FrameType, OP_RAM_ECHO, PROTOCOL_VERSION
-  from eps_patch.transport import EcuTransport
 
-  sector = bytes((index * 17) & 0xFF for index in range(0x8000))
   frames = [
     bytes([FrameType.BEGIN0, PROTOCOL_VERSION, OP_RAM_ECHO, 0])
     + struct.pack("<I", 0xFEBF2000),
@@ -402,6 +400,15 @@ def test_transport_collects_ram_echo_as_one_exact_sram_region():
     bytes([FrameType.STATUS, 1, 0, 0]) + bytes(4),
     bytes([FrameType.END, 0, 0, 0]) + struct.pack("<I", binascii.crc32(sector)),
   ))
+  return frames
+
+
+def test_transport_collects_ram_echo_as_one_exact_sram_region():
+  from eps_patch.protocol import OP_RAM_ECHO
+  from eps_patch.transport import EcuTransport
+
+  sector = bytes((index * 17) & 0xFF for index in range(0x8000))
+  frames = _ram_echo_frames(sector)
 
   with EcuTransport(bindings=fake_bindings([])) as transport:
     FakePanda.instances[-1].can_batches = [
@@ -412,6 +419,47 @@ def test_transport_collects_ram_echo_as_one_exact_sram_region():
   assert result.operation == OP_RAM_ECHO
   assert result.sector == sector
   assert result.statuses == ((1, 0),)
+
+
+def test_collect_stream_ignores_routine_pending_with_arbitrary_padding():
+  from eps_patch.protocol import OP_RAM_ECHO
+  from eps_patch.transport import EcuTransport
+
+  pending = bytes.fromhex("03 7f 31 78 aa bb cc dd")
+  sector = bytes((index * 17) & 0xFF for index in range(0x8000))
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    FakePanda.instances[-1].can_batches = [[
+      (0x7A9, pending, 0),
+      *((0x7A9, frame, 0) for frame in _ram_echo_frames(sector)),
+    ]]
+    result = transport.collect_stream(operation=OP_RAM_ECHO, timeout=1.0)
+
+  assert result.operation == OP_RAM_ECHO
+  assert result.sector == sector
+
+
+def test_collect_stream_reports_nonpending_routine_nrc_and_raw_frame():
+  from eps_patch.protocol import OP_RAM_ECHO
+  from eps_patch.transport import EcuTransport, TransportError
+
+  frame = bytes.fromhex("03 7f 31 22 aa bb cc dd")
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    FakePanda.instances[-1].can_batches = [[(0x7A9, frame, 0)]]
+    with pytest.raises(
+      TransportError, match=r"NRC 0x22.*037f3122aabbccdd",
+    ):
+      transport.collect_stream(operation=OP_RAM_ECHO, timeout=0.1)
+
+
+def test_collect_stream_reports_unknown_payload_frame_raw_bytes():
+  from eps_patch.protocol import OP_RAM_ECHO
+  from eps_patch.transport import EcuTransport, TransportError
+
+  frame = bytes.fromhex("03 01 02 03 04 05 06 07")
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    FakePanda.instances[-1].can_batches = [[(0x7A9, frame, 0)]]
+    with pytest.raises(TransportError, match="0301020304050607"):
+      transport.collect_stream(operation=OP_RAM_ECHO, timeout=0.1)
 
 
 def test_transport_converts_payload_protocol_errors_to_transport_errors():
