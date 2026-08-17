@@ -60,8 +60,12 @@ BUILT_PAYLOADS = {
     "size": 3936,
     "sha256": "17f17104af1689a2675488957af3bcf1e96d23d2407a2f0c1ee905c691b23d63",
   },
+  "live_read": {
+    "size": 1280,
+    "sha256": "3543bbe2ea4077f9cbeb9db31b0bce98636be09ed9017e826bd408eb5058d9ea",
+  },
 }
-BUILD_READY_PAYLOADS = ("live_read",)
+BUILD_READY_PAYLOADS: tuple[str, ...] = ()
 BUILT_PAYLOAD_ENTRYPOINTS = {
   "probe_pe_cycle": "0xfebf0000",
 }

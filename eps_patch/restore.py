@@ -36,8 +36,9 @@ from .transport import BootloaderIdentity, EcuIdentity, RamBlob
 RAM_ECHO_ENVELOPE_SHA256 = (
   "c938bfbd82e8f55c1597f0238c5d55213eea2196a04ed9594b298b37ac11b268"
 )
-# Set only after the reviewed V850 binary and its complete envelope are built.
-LIVE_READ_ENVELOPE_SHA256: str | None = None
+LIVE_READ_ENVELOPE_SHA256: str | None = (
+  "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+)
 RESTORE_INTENT_MAGIC = 0x52535452
 RESTORE_INTENT_SCHEMA = 1
 RESTORE_INTENT_LENGTH = 0x80

@@ -2,11 +2,10 @@
 
 ## Status
 
-**BUILD_READY:** implemented first-class recovery from persisted patch
-incidents plus the source-reviewed, state-agnostic live-read precheck. The new
-payload source and host integration are ready for the approved V850 cross-build,
-but runtime restore intentionally remains fail-closed until `live_read.bin` and
-its exact binary/envelope pins are returned and reviewed.
+**COMPLETE:** implemented first-class recovery from persisted patch incidents
+plus the source-reviewed, state-agnostic live-read precheck. The approved V850
+cross-build returned `live_read.bin`; its exact binary and zero-DID envelope
+hashes are now pinned in the runtime allowlists.
 
 The restore
 entry point discovers the newest canonical non-PASS incident, derives only the
@@ -90,7 +89,10 @@ Live-read expansion RED/GREEN evidence:
 - warning-clean translation unit: `1 failed` on an unused helper under
   `-Werror`, then `1 passed` after isolating the live-read build surface;
 - remote manifest termination: `1 failed`, then `1 passed` after binding the
-  final payload comma to `live_read`.
+  final payload comma to `live_read`;
+- returned-artifact integration: the old BUILD_READY contract failed twice on
+  the new binary/manifest, then the exact binary, loader, manifest, and envelope
+  pin contract passed `2 passed` after the runtime pins were added.
 
 Task 5 focused GREEN:
 
@@ -109,7 +111,7 @@ Full-suite GREEN:
 /Users/kevin/Desktop/disable-secoc/sienna-b4512000-rx-secoc/.venv/bin/python \
   -m pytest -q
 
-358 passed in 1.85s
+358 passed in 1.89s
 ```
 
 ## Retained Restore Payloads
@@ -133,30 +135,35 @@ words, and has no FACI, DCRA, erase, program, P/E-mode, intent, or staged-SRAM
 capability. Host warning-clean validation uses the production `-Wall -Wextra
 -Werror` surface with only the target-specific section attribute neutralized.
 
-No `live_read.bin`, payload manifest record, `BUILT_PAYLOADS` record, or
-production envelope pin has been invented. `BUILD_READY_PAYLOADS` names the
-pending payload and production restore raises “reviewed live_read payload is not
-built and pinned” before preflight while its pin is absent.
+The returned `live_read.bin` is 1,280 bytes with SHA-256
+`3543bbe2ea4077f9cbeb9db31b0bce98636be09ed9017e826bd408eb5058d9ea`.
+It is recorded in the generated manifest and `BUILT_PAYLOADS`, remains below
+the 4,048-byte shellcode boundary, and loads only when its size and SHA match
+both pins. Its deterministic 4,096-byte zero-DID envelope SHA-256 is
+`4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d`
+and is the exact `LIVE_READ_ENVELOPE_SHA256` accepted by restore.
 
-## Remote Build Handoff
+## Remote Build Verification
 
-The required V850 tools are not installed locally. The approved remote builder
-must run exactly:
+The controller used the running `gcc-v850-elf-master` container
+`d8e0d4cf5e92` to run the approved build:
 
 ```bash
 cd payload
 TOOL_PREFIX=v850-elf- ./build.sh
 ```
 
-Return for review:
+The refreshed artifacts establish:
 
-1. `payload/build/live_read.bin` built by GCC 13.2.0/binutils 2.41;
-2. regenerated `payload/build/manifest.json`, including the live-read size and
-   SHA-256 and unchanged hashes for every retained binary;
-3. SHA-256 of the 4,096-byte zero-DID live-read envelope.
-
-Only after those values are pinned may `LIVE_READ_ENVELOPE_SHA256` become a
-string and runtime restore be declared complete.
+1. GCC 13.2.0/binutils 2.41 in the regenerated manifest;
+2. exact source hash
+   `c7e8aad79d44b9ec335ee90eb9974175b66f5004b88b8e7487c727c6cec6135a`,
+   binary size 1,280, and binary SHA-256
+   `3543bbe2ea4077f9cbeb9db31b0bce98636be09ed9017e826bd408eb5058d9ea`;
+3. unchanged hashes for every retained binary, including the restore writer;
+4. zero-DID envelope SHA-256
+   `4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d`,
+   now pinned by production.
 
 ## Review and Safety Boundary
 

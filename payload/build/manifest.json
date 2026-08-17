@@ -30,6 +30,7 @@
     "write_target_candidate": {"size": 3934, "sha256": "d0c600ff4ff266e491ac3a0baf4e77075c1863dc2290ae681a09a5bc1251af26"},
     "write_crc_candidate": {"size": 3946, "sha256": "3698aca109af9e700b36a8c7fc4c7bacc7ca22acb9a2fa40864f1abd03cd685a"},
     "ram_echo": {"size": 1132, "sha256": "9ad4eb4f3e59466e05e3597d733b07dcce8e6e0751a730227f4767a8439f942e"},
-    "restore_sector": {"size": 3936, "sha256": "17f17104af1689a2675488957af3bcf1e96d23d2407a2f0c1ee905c691b23d63"}
+    "restore_sector": {"size": 3936, "sha256": "17f17104af1689a2675488957af3bcf1e96d23d2407a2f0c1ee905c691b23d63"},
+    "live_read": {"size": 1280, "sha256": "3543bbe2ea4077f9cbeb9db31b0bce98636be09ed9017e826bd408eb5058d9ea"}
   }
 }

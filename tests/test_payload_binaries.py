@@ -18,6 +18,7 @@ REVIEWED_SOURCES = (
 RUNTIME_PAYLOADS = {
   "probe_pe_cycle", "crc_probe", "crc_intermediate", "crc_verify",
   "write_target_candidate", "write_crc_candidate", "ram_echo", "restore_sector",
+  "live_read",
 }
 
 
@@ -63,19 +64,37 @@ def test_manifest_binds_every_retained_review_source():
   assert manifest["toolchain"] == {"gcc": "13.2.0", "binutils": "2.41"}
 
 
-def test_live_read_is_build_ready_without_an_invented_binary_pin():
+def test_live_read_build_and_zero_did_envelope_are_exactly_pinned():
   require_cross_build()
-  from eps_patch.payload import BUILD_READY_PAYLOADS, BUILT_PAYLOADS
+  from eps_patch.payload import (
+    BUILD_READY_PAYLOADS, BUILT_PAYLOADS, build_envelope, load_built_shellcode,
+  )
+  from eps_patch.restore import LIVE_READ_ENVELOPE_SHA256
 
   script = (PAYLOAD / "build.sh").read_text(encoding="utf-8")
   manifest = json.loads((BUILD / "manifest.json").read_text(encoding="utf-8"))
-  assert BUILD_READY_PAYLOADS == ("live_read",)
-  assert "live_read" not in BUILT_PAYLOADS
-  assert "live_read" not in manifest["payloads"]
-  assert not (BUILD / "live_read.bin").exists()
+  binary = (BUILD / "live_read.bin").read_bytes()
+  expected_binary = {
+    "size": 1280,
+    "sha256": "3543bbe2ea4077f9cbeb9db31b0bce98636be09ed9017e826bd408eb5058d9ea",
+  }
+  assert BUILD_READY_PAYLOADS == ()
+  assert BUILT_PAYLOADS["live_read"] == expected_binary
+  assert manifest["payloads"]["live_read"] == expected_binary
+  assert len(binary) == expected_binary["size"]
+  assert hashlib.sha256(binary).hexdigest() == expected_binary["sha256"]
+  assert load_built_shellcode(BUILD, "live_read") == binary
   assert manifest["sources"]["live_read.c"] == hashlib.sha256(
     (PAYLOAD / "live_read.c").read_bytes(),
   ).hexdigest()
+  envelope = build_envelope(
+    binary, did_201=bytes(16), did_202=bytes(16), iv=bytes(16),
+  )
+  expected_envelope_sha256 = (
+    "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+  )
+  assert hashlib.sha256(envelope).hexdigest() == expected_envelope_sha256
+  assert LIVE_READ_ENVELOPE_SHA256 == expected_envelope_sha256
   assert script.count("write_crc_candidate ram_echo restore_sector live_read") == 2
   assert "! -name live_read.bin" in script
   assert "last_payload=live_read" in script
