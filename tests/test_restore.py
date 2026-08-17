@@ -212,7 +212,13 @@ def test_patch_state_audit_rejects_every_legacy_history_near_miss(
     _load_patch_state(state_path, state_path.parent.name)
 
 
-@pytest.mark.parametrize("mutation", ("marker", "rejection-sequence"))
+@pytest.mark.parametrize(
+  "mutation",
+  (
+    "marker", "rejection-sequence", "reconciled-from", "reconciled-sequence",
+    "classification", "target-hash", "crc-hash",
+  ),
+)
 def test_patch_state_audit_rejects_mutated_consumption_marker(tmp_path, mutation):
   from eps_patch.restore import RestoreError, _load_patch_state
 
@@ -232,14 +238,21 @@ def test_patch_state_audit_rejects_mutated_consumption_marker(tmp_path, mutation
     powers=[],
   )
   state = json.loads(state_path.read_text(encoding="utf-8"))
+  evidence = state["transitions"][-1]["evidence"]
   if mutation == "marker":
-    state["transitions"][-1]["evidence"]["legacy_trigger_recovery"] = (
-      "nrc31-route-v2"
-    )
+    evidence["legacy_trigger_recovery"] = "nrc31-route-v2"
+  elif mutation == "rejection-sequence":
+    evidence["legacy_trigger_rejection_sequence"] = 9
+  elif mutation == "reconciled-from":
+    evidence["reconciled_from"] = "CRC_ARMED"
+  elif mutation == "reconciled-sequence":
+    evidence["reconciled_sequence"] = 9
+  elif mutation == "classification":
+    evidence["classification"] = "candidate"
+  elif mutation == "target-hash":
+    evidence["target_readback_sha256"] = "0" * 64
   else:
-    state["transitions"][-1]["evidence"][
-      "legacy_trigger_rejection_sequence"
-    ] = 9
+    evidence["crc_readback_sha256"] = "0" * 64
   state_path.write_text(json.dumps(state), encoding="utf-8")
 
   with pytest.raises(RestoreError, match="one-time CRC retry limit"):

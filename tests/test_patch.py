@@ -844,6 +844,40 @@ def test_legacy_recovery_structural_near_miss_stops_before_hardware(
   assert events == []
 
 
+@pytest.mark.parametrize("mutation", ("correlated-crc32", "correlated-payload"))
+def test_legacy_recovery_revalidates_current_writer_before_hardware(
+  tmp_path, mutation,
+):
+  from eps_patch.patch import PatchError
+  from eps_patch.restore import _legacy_crc_trigger_recovery_status
+
+  layout, state_path, target, *_case = _legacy_crc_trigger_case(tmp_path)
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  for arm_sequence in (6, 9):
+    evidence = state["transitions"][arm_sequence]["evidence"]
+    if mutation == "correlated-crc32":
+      evidence["candidate_crc32"] = "0x00000000"
+    else:
+      evidence["payload"]["intent_sha256"] = "0" * 64
+  assert _legacy_crc_trigger_recovery_status(state["transitions"]) == "pending"
+  state_path.write_text(json.dumps(state), encoding="utf-8")
+  mutated_bytes = state_path.read_bytes()
+  events = []
+
+  with pytest.raises(PatchError, match="reviewed writer"):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=lambda: events.append("transport"),
+      events=events,
+      confirmations=events,
+      powers=events,
+    )
+
+  assert state_path.read_bytes() == mutated_bytes
+  assert events == []
+
+
 @pytest.mark.parametrize(
   "failure", ("partial-crc", "source-target", "identity", "transport"),
 )
