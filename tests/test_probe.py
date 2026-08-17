@@ -1,6 +1,7 @@
 import binascii
 import copy
 import hashlib
+import json
 import struct
 from dataclasses import replace
 from pathlib import Path
@@ -170,6 +171,91 @@ def test_probe_runs_one_payload_and_atomically_installs_complete_pass(probe_case
     "target_sector_crc32": binascii.crc32(result.regions[0].data),
     "target_sector_sha256": hashlib.sha256(result.regions[0].data).hexdigest(),
   }
+
+
+def test_nonpass_probe_records_complete_scalar_diagnostics(probe_case):
+  from eps_patch.probe import ProbeError, run_probe
+
+  layout, target, payload, identity, result = probe_case
+  result = _replace_dcra(result, exit_ctl=0xA0B0C0D0, exit_cout=0xE0F00102)
+  result = replace(result, statuses=((1, 3),))
+
+  with pytest.raises(ProbeError, match=(
+    r"entry_ctl=0x10203040.*entry_cout=0x50607080.*"
+    r"exit_ctl=0xa0b0c0d0.*exit_cout=0xe0f00102.*last-probe-failure\.json"
+  )):
+    run_probe(
+      layout=layout,
+      payload=payload,
+      preflight=lambda: None,
+      transport_factory=lambda: FakeTransport(identity, result),
+      target=target,
+      new_uds=False,
+    )
+
+  report = json.loads(layout.probe_failure_report.read_text(encoding="utf-8"))
+  assert report["outcome"] == {"primary_code": 3, "cleanup_code": 0}
+  assert report["identity"]["panda_serial"] == "test-panda"
+  assert report["payload"] == {
+    "name": "probe_pe_cycle", "sha256": REVIEWED_PROBE_ENVELOPE_SHA256,
+  }
+  assert report["magic_words"] == [target.magic_word, target.magic_word]
+  assert report["dcra"] == {
+    name.lower(): getattr(result.dcra, name.lower()) for name in DCRA_RECORDS
+  }
+  assert set(report["snapshots"]) == {
+    "PRE", "UNLOCKED", "WINDOWS", "CONFIGURED", "RESTORED",
+  }
+  assert report["regions"]["target"] == {
+    "address": target.sector_base,
+    "length": target.sector_length,
+    "sha256": hashlib.sha256(result.regions[0].data).hexdigest(),
+    "crc32": binascii.crc32(result.regions[0].data),
+  }
+  assert report["regions"]["crc"] == {
+    "address": target.crc_sector_base,
+    "length": target.sector_length,
+    "sha256": hashlib.sha256(result.regions[1].data).hexdigest(),
+    "crc32": binascii.crc32(result.regions[1].data),
+  }
+  assert "data" not in json.dumps(report)
+  assert not layout.probe_directory.exists()
+
+
+def test_probe_pass_does_not_write_failure_diagnostic(probe_case):
+  from eps_patch.probe import run_probe
+
+  layout, target, payload, identity, result = probe_case
+
+  run_probe(
+    layout=layout,
+    payload=payload,
+    preflight=lambda: None,
+    transport_factory=lambda: FakeTransport(identity, result),
+    target=target,
+    new_uds=False,
+  )
+
+  assert not layout.probe_failure_report.exists()
+
+
+def test_malformed_probe_result_does_not_write_failure_diagnostic(probe_case):
+  from eps_patch.probe import ProbeError, run_probe
+
+  layout, target, payload, identity, result = probe_case
+  result = replace(result, statuses=())
+
+  with pytest.raises(ProbeError, match="outcome status is incomplete"):
+    run_probe(
+      layout=layout,
+      payload=payload,
+      preflight=lambda: None,
+      transport_factory=lambda: FakeTransport(identity, result),
+      target=target,
+      new_uds=False,
+    )
+
+  assert not layout.probe_failure_report.exists()
 
 
 def test_probe_rejects_arbitrary_self_declared_payload_before_any_side_effect(probe_case):

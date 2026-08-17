@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import binascii
 import hashlib
+import json
 from dataclasses import dataclass, fields
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
-from .artifacts import sha256_bytes
+from .artifacts import _atomic_replace, sha256_bytes
 from .evidence import install_probe_pass
 from .manifest import TARGET, TargetManifest
 from .payload import PROBE_PE_CYCLE_ENVELOPE_SHA256
@@ -26,6 +28,16 @@ from .transport import EcuIdentity
 
 class ProbeError(RuntimeError):
   pass
+
+
+class _ProbeOutcomeFailure(ProbeError):
+  """A structurally complete probe stream with a non-PASS ECU outcome."""
+
+  def __init__(self, primary: int, cleanup: int, diagnostic: dict[str, object]):
+    self.primary = primary
+    self.cleanup = cleanup
+    self.diagnostic = diagnostic
+    super().__init__(f"probe outcome is not PASS: primary={primary}, cleanup={cleanup}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +121,23 @@ def run_probe(
       payload, operation=OP_FACI_PE_CYCLE, new_uds=new_uds,
     )
 
-  target_sector, crc_sector, observation, host_checks, snapshots, primary, cleanup = (
-    _validate_result(result, target)
-  )
+  try:
+    target_sector, crc_sector, observation, host_checks, snapshots, primary, cleanup = (
+      _validate_result(result, target)
+    )
+  except _ProbeOutcomeFailure as exc:
+    try:
+      path = _record_probe_outcome_failure(layout, identity, payload, exc)
+    except OSError as write_exc:
+      raise ProbeError(f"{exc}; failure diagnostic write failed: {write_exc}") from exc
+    dcra = exc.diagnostic["dcra"]
+    assert isinstance(dcra, dict)
+    raise ProbeError(
+      f"{exc}; DCRA entry_ctl=0x{dcra['entry_ctl']:08x}, "
+      f"entry_cout=0x{dcra['entry_cout']:08x}, "
+      f"exit_ctl=0x{dcra['exit_ctl']:08x}, "
+      f"exit_cout=0x{dcra['exit_cout']:08x}; diagnostic: {path}"
+    ) from exc
   identity_record = _identity_record(identity)
   target_descriptor = _descriptor(target.sector_base, target_sector)
   crc_descriptor = _descriptor(target.crc_sector_base, crc_sector)
@@ -153,6 +179,89 @@ def _validate_identity(identity: object, target: TargetManifest) -> None:
     raise ProbeError("ECU identity does not exactly match the target")
 
 
+def _failure_stream_diagnostic(
+  result: StreamResult, target: TargetManifest,
+) -> dict[str, object]:
+  if type(result.magic_words) is not tuple or len(result.magic_words) != 2:
+    raise ProbeError("probe diagnostic magic words are incomplete")
+  magic_words = [_u32(value, "diagnostic magic word") for value in result.magic_words]
+
+  if type(result.regions) is not tuple or len(result.regions) != 2:
+    raise ProbeError("probe diagnostic regions are incomplete")
+  descriptors: dict[str, dict[str, int | str]] = {}
+  for label, region in zip(("target", "crc"), result.regions, strict=True):
+    if type(region) is not RegionResult or type(region.data) is not bytes:
+      raise ProbeError(f"probe diagnostic {label} region is malformed")
+    if len(region.data) != target.sector_length:
+      raise ProbeError(f"probe diagnostic {label} region has the wrong length")
+    descriptors[label] = {
+      "address": _u32(region.base, f"diagnostic {label} address"),
+      "length": len(region.data),
+      "sha256": sha256_bytes(region.data),
+      "crc32": binascii.crc32(region.data),
+    }
+
+  return {
+    "magic_words": magic_words,
+    "dcra": _failure_dcra_record(result),
+    "snapshots": _failure_snapshot_records(result.faci_values),
+    "regions": descriptors,
+  }
+
+
+def _failure_dcra_record(result: StreamResult) -> dict[str, int]:
+  if type(result.dcra) is not DcraObservation:
+    raise ProbeError("probe diagnostic DCRA observation is missing")
+  values = tuple(
+    _u32(getattr(result.dcra, field.name), f"diagnostic {field.name}")
+    for field in fields(DcraObservation)
+  )
+  if type(result.dcra_values) is not tuple or tuple(result.dcra_values) != values:
+    raise ProbeError("probe diagnostic DCRA records are incomplete or contradictory")
+  return dict(zip((field.name for field in fields(DcraObservation)), values))
+
+
+def _failure_snapshot_records(values: object) -> dict[str, dict[str, int]]:
+  if type(values) is not tuple or len(values) != len(FACI_PE_CYCLE_DIAGNOSTICS):
+    raise ProbeError("probe diagnostic FACI sequence is incomplete")
+  snapshots: dict[str, dict[str, int]] = {}
+  for checkpoint_index, checkpoint in enumerate(_CHECKPOINTS):
+    start = checkpoint_index * len(_REGISTERS)
+    raw = values[start:start + len(_REGISTERS)]
+    record: dict[str, int] = {}
+    for name, width, value in zip(_REGISTERS, _REGISTER_WIDTHS, raw, strict=True):
+      checked = _u32(value, f"diagnostic {checkpoint} {name}")
+      if checked >= 1 << (width * 8):
+        raise ProbeError(f"probe diagnostic {checkpoint} {name} exceeds its width")
+      record[name] = checked
+    snapshots[checkpoint] = record
+  return snapshots
+
+
+def _record_probe_outcome_failure(
+  layout: ArtifactLayout,
+  identity: EcuIdentity,
+  payload: PayloadImage,
+  failure: _ProbeOutcomeFailure,
+) -> Path:
+  report = {
+    "schema": 1,
+    "workflow": "faci-pe-cycle-failure",
+    "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    "identity": _identity_record(identity),
+    "payload": {"name": payload.name, "sha256": payload.sha256},
+    "outcome": {"primary_code": failure.primary, "cleanup_code": failure.cleanup},
+    "magic_words": failure.diagnostic["magic_words"],
+    "dcra": failure.diagnostic["dcra"],
+    "snapshots": failure.diagnostic["snapshots"],
+    "regions": failure.diagnostic["regions"],
+    "error": str(failure),
+  }
+  content = json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+  _atomic_replace(layout.probe_failure_report, content)
+  return layout.probe_failure_report
+
+
 def _validate_result(
   result: object, target: TargetManifest,
 ) -> tuple[
@@ -165,8 +274,6 @@ def _validate_result(
     raise ProbeError("probe stream returned the wrong operation")
   if result.sector is not None:
     raise ProbeError("probe stream exposed a forbidden legacy single-sector field")
-  if result.magic_words != (target.magic_word, target.magic_word):
-    raise ProbeError("probe boot magic words do not match the target")
   if type(result.statuses) is not tuple or len(result.statuses) != 1:
     raise ProbeError("probe outcome status is incomplete")
   status = result.statuses[0]
@@ -176,9 +283,10 @@ def _validate_result(
   primary = raw_status & 0xFFFF
   cleanup = (raw_status >> 16) & 0xFFFF
   if primary != 0 or cleanup != 0:
-    raise ProbeError(
-      f"probe outcome is not PASS: primary={primary}, cleanup={cleanup}"
-    )
+    raise _ProbeOutcomeFailure(primary, cleanup, _failure_stream_diagnostic(result, target))
+
+  if result.magic_words != (target.magic_word, target.magic_word):
+    raise ProbeError("probe boot magic words do not match the target")
 
   if type(result.regions) is not tuple or len(result.regions) != 2:
     raise ProbeError("probe must return exactly two full sectors")
