@@ -61,6 +61,7 @@ BUILT_PAYLOADS = {
     "sha256": "17f17104af1689a2675488957af3bcf1e96d23d2407a2f0c1ee905c691b23d63",
   },
 }
+BUILD_READY_PAYLOADS = ("live_read",)
 BUILT_PAYLOAD_ENTRYPOINTS = {
   "probe_pe_cycle": "0xfebf0000",
 }

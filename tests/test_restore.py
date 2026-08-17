@@ -2,6 +2,7 @@ import binascii
 import hashlib
 import inspect
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,10 +10,28 @@ import pytest
 
 from eps_patch.artifacts import sha256_bytes
 from eps_patch.paths import ArtifactLayout
-from eps_patch.protocol import OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult
+from eps_patch.protocol import (
+  OP_LIVE_READ, OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult,
+)
 from eps_patch.transport import BootloaderIdentity
 
 import test_patch as patch_fx
+
+
+TEST_LIVE_READ_ENVELOPE = bytes(0x1000)
+TEST_LIVE_READ_ENVELOPE_SHA256 = hashlib.sha256(TEST_LIVE_READ_ENVELOPE).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def pin_test_live_read_envelope(monkeypatch):
+  import eps_patch.restore as restore_module
+
+  monkeypatch.setattr(
+    restore_module,
+    "LIVE_READ_ENVELOPE_SHA256",
+    TEST_LIVE_READ_ENVELOPE_SHA256,
+    raising=False,
+  )
 
 
 def _patch_state(
@@ -40,6 +59,11 @@ def _patch_state(
       "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
       "TARGET_COMMITTED", "CRC_PRECHECKED", "CRC_ARMED", "CRC_COMMITTED",
       "VERIFY_PENDING", "RECOVERY_REQUIRED",
+    )
+  elif result == "CRC_INDETERMINATE":
+    states = (
+      "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+      "TARGET_COMMITTED", "CRC_PRECHECKED", "CRC_ARMED", "CRC_INDETERMINATE",
     )
   elif result == "PASS":
     states = (
@@ -261,6 +285,194 @@ def test_committed_state_write_failure_keeps_indeterminate_state_canonical(
   assert restore_module._load_restore_state(state_path, state_path.parent.name) == state
 
 
+def _live_read_result(target_sector: bytes, crc_sector: bytes) -> StreamResult:
+  from eps_patch.protocol import OP_LIVE_READ
+
+  return StreamResult(
+    operation=OP_LIVE_READ,
+    sector=None,
+    magic_words=(patch_fx.TARGET.magic_word, patch_fx.TARGET.magic_word),
+    statuses=((1, 0),),
+    regions=(
+      RegionResult(patch_fx.TARGET.sector_base, target_sector),
+      RegionResult(patch_fx.TARGET.crc_sector_base, crc_sector),
+    ),
+  )
+
+
+@pytest.mark.parametrize(
+  (
+    "incident_result", "restore_order", "target_live", "crc_live", "completed",
+    "expected_states",
+  ),
+  (
+    ("TARGET_INDETERMINATE", ["target"], "other", "source", (), ("other", "source")),
+    ("TARGET_INDETERMINATE", ["target"], "source", "source", (), ("source", "source")),
+    ("RECOVERY_REQUIRED", ["target"], "candidate", "source", (), ("candidate", "source")),
+    ("CRC_INDETERMINATE", ["crc", "target"], "candidate", "other", (), ("candidate", "other")),
+    ("RECOVERY_REQUIRED", ["crc", "target"], "candidate", "candidate", (), ("candidate", "candidate")),
+    (
+      "RECOVERY_REQUIRED", ["crc", "target"], "candidate", "source",
+      (patch_fx.TARGET.crc_sector_base,), ("candidate", "source"),
+    ),
+  ),
+)
+def test_live_precheck_classifies_complete_sectors_against_incident_and_backups(
+  tmp_path,
+  incident_result,
+  restore_order,
+  target_live,
+  crc_live,
+  completed,
+  expected_states,
+):
+  from eps_patch.evidence import load_probe_pass
+  from eps_patch.restore import _validate_live_precheck, select_restore_plan
+
+  (
+    layout, target, _identity, target_source, crc_source,
+    target_candidate, crc_candidate,
+  ) = _probe_case(tmp_path)
+  _patch_state(
+    layout,
+    result=incident_result,
+    restore_order=restore_order,
+  )
+  choices = {
+    "target": {
+      "source": target_source,
+      "candidate": target_candidate,
+      "other": bytes([target_source[0] ^ 1]) + target_source[1:],
+    },
+    "crc": {
+      "source": crc_source,
+      "candidate": crc_candidate,
+      "other": bytes([crc_source[0] ^ 1]) + crc_source[1:],
+    },
+  }
+
+  classification = _validate_live_precheck(
+    _live_read_result(choices["target"][target_live], choices["crc"][crc_live]),
+    plan=select_restore_plan(layout),
+    trusted=load_probe_pass(layout, target),
+    completed=completed,
+    target=target,
+  )
+
+  assert (classification.target_state, classification.crc_state) == expected_states
+  assert classification.target_sha256 == sha256_bytes(choices["target"][target_live])
+  assert classification.crc_sha256 == sha256_bytes(choices["crc"][crc_live])
+
+
+@pytest.mark.parametrize(
+  ("incident_result", "restore_order", "target_live", "crc_live", "completed"),
+  (
+    ("TARGET_INDETERMINATE", ["target"], "other", "candidate", ()),
+    ("RECOVERY_REQUIRED", ["target"], "source", "source", ()),
+    ("CRC_INDETERMINATE", ["crc", "target"], "source", "other", ()),
+    ("RECOVERY_REQUIRED", ["crc", "target"], "candidate", "source", ()),
+    (
+      "RECOVERY_REQUIRED", ["crc", "target"], "candidate", "candidate",
+      (patch_fx.TARGET.crc_sector_base,),
+    ),
+  ),
+)
+def test_live_precheck_rejects_state_that_contradicts_incident_or_restore_progress(
+  tmp_path,
+  incident_result,
+  restore_order,
+  target_live,
+  crc_live,
+  completed,
+):
+  from eps_patch.evidence import load_probe_pass
+  from eps_patch.restore import RestoreError, _validate_live_precheck, select_restore_plan
+
+  (
+    layout, target, _identity, target_source, crc_source,
+    target_candidate, crc_candidate,
+  ) = _probe_case(tmp_path)
+  _patch_state(layout, result=incident_result, restore_order=restore_order)
+  choices = {
+    "target": {
+      "source": target_source,
+      "candidate": target_candidate,
+      "other": bytes([target_source[0] ^ 1]) + target_source[1:],
+    },
+    "crc": {
+      "source": crc_source,
+      "candidate": crc_candidate,
+      "other": bytes([crc_source[0] ^ 1]) + crc_source[1:],
+    },
+  }
+
+  with pytest.raises(RestoreError, match="live.*incident|incident.*live"):
+    _validate_live_precheck(
+      _live_read_result(choices["target"][target_live], choices["crc"][crc_live]),
+      plan=select_restore_plan(layout),
+      trusted=load_probe_pass(layout, target),
+      completed=completed,
+      target=target,
+    )
+
+
+@pytest.mark.parametrize(
+  "mutation",
+  (
+    "wrong-operation", "scalar-sector", "wrong-order", "wrong-base", "short-data",
+    "wrong-magic", "nonzero-status", "extra-faci", "extra-crc", "extra-dcra",
+  ),
+)
+def test_live_precheck_rejects_malformed_or_ambiguous_result(tmp_path, mutation):
+  from eps_patch.evidence import load_probe_pass
+  from eps_patch.restore import RestoreError, _validate_live_precheck, select_restore_plan
+
+  layout, target, _identity, target_source, crc_source, *_candidates = _probe_case(
+    tmp_path,
+  )
+  _patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  result = _live_read_result(target_source, crc_source)
+  if mutation == "wrong-operation":
+    result = replace(result, operation=OP_RAM_ECHO)
+  elif mutation == "scalar-sector":
+    result = replace(result, sector=target_source)
+  elif mutation == "wrong-order":
+    result = replace(result, regions=tuple(reversed(result.regions)))
+  elif mutation == "wrong-base":
+    result = replace(
+      result,
+      regions=(RegionResult(0x70000, target_source), result.regions[1]),
+    )
+  elif mutation == "short-data":
+    result = replace(
+      result,
+      regions=(RegionResult(target.sector_base, target_source[:-1]), result.regions[1]),
+    )
+  elif mutation == "wrong-magic":
+    result = replace(result, magic_words=(0, target.magic_word))
+  elif mutation == "nonzero-status":
+    result = replace(result, statuses=((1, 1),))
+  elif mutation == "extra-faci":
+    result = replace(result, faci_values=(0,))
+  elif mutation == "extra-crc":
+    result = replace(result, crc_values=(0,))
+  else:
+    result = replace(result, dcra_values=(0,))
+
+  with pytest.raises(RestoreError, match="live-read"):
+    _validate_live_precheck(
+      result,
+      plan=select_restore_plan(layout),
+      trusted=load_probe_pass(layout, target),
+      completed=(),
+      target=target,
+    )
+
+
 @pytest.mark.parametrize(
   "setup",
   (
@@ -385,6 +597,14 @@ class FakeRestoreTransport:
       raise self.failure
     return self.result
 
+  def run_payload(self, image, *, operation, new_uds):
+    self.events.append((self.label, "payload", operation, image.name))
+    assert operation == self.operation
+    assert new_uds is False
+    if self.failure is not None:
+      raise self.failure
+    return self.result
+
 
 def _restore_payloads():
   from eps_patch.payload import build_envelope, load_built_shellcode
@@ -405,6 +625,11 @@ def _restore_payloads():
       envelope=envelope,
       sha256=RAM_ECHO_ENVELOPE_SHA256,
     ),
+    "live_read": SimpleNamespace(
+      name="live_read",
+      envelope=TEST_LIVE_READ_ENVELOPE,
+      sha256=TEST_LIVE_READ_ENVELOPE_SHA256,
+    ),
   }
 
 
@@ -420,6 +645,7 @@ def _run_restore(
   failure=None,
   wrong_identity=False,
   exact_confirmation=True,
+  live_overrides=None,
 ):
   from eps_patch.restore import RestoreError, run_restore
 
@@ -429,8 +655,8 @@ def _run_restore(
     identity,
     target_source,
     crc_source,
-    _target_candidate,
-    _crc_candidate,
+    target_candidate,
+    crc_candidate,
   ) = _probe_case(tmp_path)
   result = "RECOVERY_REQUIRED" if len(order) == 2 else "TARGET_INDETERMINATE"
   incident_path = _patch_state(layout, result=result, restore_order=list(order))
@@ -447,6 +673,14 @@ def _run_restore(
     if failure == "malformed-result" and name == order[0]:
       altered = bytes([data[0] ^ 1]) + data[1:]
       writer_result = _restore_result(base, altered)
+    if len(order) == 2 and name == "crc":
+      live_target, live_crc = target_candidate, crc_candidate
+    elif len(order) == 2:
+      live_target, live_crc = target_candidate, crc_source
+    else:
+      live_target, live_crc = target_source, crc_source
+    if live_overrides is not None and name in live_overrides:
+      live_target, live_crc = live_overrides[name]
     transports.extend((
       FakeRestoreTransport(
         f"{name}-echo",
@@ -454,6 +688,15 @@ def _run_restore(
         wrong if wrong_identity and not transports else boot_identity,
         OP_RAM_ECHO,
         _ram_echo_result(data),
+      ),
+      FakeRestoreTransport(
+        f"{name}-live",
+        events,
+        boot_identity,
+        OP_LIVE_READ,
+        _live_read_result(live_target, live_crc),
+        failure=TimeoutError("live read response lost")
+        if failure == f"{name}-live" else None,
       ),
       FakeRestoreTransport(
         f"{name}-writer",
@@ -481,7 +724,9 @@ def _run_restore(
       confirmation=lambda prompt: confirmations.append(prompt) or (
         prompt if exact_confirmation else prompt + " "
       ),
-      power_cycle_checkpoint=lambda prompt: power_prompts.append(prompt) or "",
+      power_cycle_checkpoint=lambda prompt: (
+        power_prompts.append(prompt), events.append(("power", prompt)), "",
+      )[-1],
       target=target,
       new_uds=False,
     )
@@ -535,6 +780,88 @@ def test_restore_crc_first_then_target_with_fresh_identity_and_exact_confirmatio
   assert any("CRC_COMMITTED -> TARGET_ECHO_PENDING" in prompt for prompt in power_prompts)
   assert (state_path.parent / "returned-sector-0xf8000.bin").exists()
   assert (state_path.parent / "returned-sector-0x60000.bin").exists()
+
+
+def test_restore_live_reads_both_sectors_before_each_writer_arm(tmp_path):
+  report, state_path, _incident, events, _confirmations, power_prompts = _run_restore(
+    tmp_path,
+  )
+
+  assert report is not None
+  live_events = [event for event in events if len(event) > 1 and event[1] == "payload"]
+  assert [(event[0], event[2], event[3]) for event in live_events] == [
+    ("crc-live", OP_LIVE_READ, "live_read"),
+    ("target-live", OP_LIVE_READ, "live_read"),
+  ]
+  transitions = json.loads(state_path.read_text(encoding="utf-8"))["transitions"]
+  names = [transition["result"] for transition in transitions]
+  assert names.index("CRC_LIVE_PRECHECKED") < names.index("CRC_ARMED")
+  assert names.index("TARGET_LIVE_PRECHECKED") < names.index("TARGET_ARMED")
+  crc_evidence = next(
+    transition["evidence"] for transition in transitions
+    if transition["result"] == "CRC_LIVE_PRECHECKED"
+  )
+  target_evidence = next(
+    transition["evidence"] for transition in transitions
+    if transition["result"] == "TARGET_LIVE_PRECHECKED"
+  )
+  assert crc_evidence["live_sectors"]["target"]["state"] == "candidate"
+  assert crc_evidence["live_sectors"]["crc"]["state"] == "candidate"
+  assert target_evidence["live_sectors"]["target"]["state"] == "candidate"
+  assert target_evidence["live_sectors"]["crc"]["state"] == "source"
+  assert any("CRC_ECHO_VERIFIED -> CRC_LIVE_PRECHECKED" in item for item in power_prompts)
+  assert any("CRC_LIVE_PRECHECKED -> CRC_ARMED" in item for item in power_prompts)
+  assert any(
+    "TARGET_ECHO_VERIFIED -> TARGET_LIVE_PRECHECKED" in item
+    for item in power_prompts
+  )
+  assert any("TARGET_LIVE_PRECHECKED -> TARGET_ARMED" in item for item in power_prompts)
+
+
+def test_restore_rejects_contradictory_live_state_before_confirmation_or_writer(tmp_path):
+  layout, _target, _identity, _target_source, crc_source, _tc, crc_candidate = (
+    _probe_case(tmp_path / "fixture")
+  )
+  del layout
+  report, state_path, _incident, events, confirmations, _powers = _run_restore(
+    tmp_path,
+    order=("target",),
+    live_overrides={"target": (bytes(0x8000), crc_candidate)},
+  )
+
+  assert report is None
+  assert json.loads(state_path.read_text(encoding="utf-8"))["result"] == "FAILED"
+  assert confirmations == []
+  assert not any(
+    len(event) > 2 and event[1] == "staged" and event[2] == OP_RESTORE_SECTOR
+    for event in events
+  )
+  assert crc_source != crc_candidate
+
+
+def test_live_read_failure_after_crc_commit_is_terminal_indeterminate(tmp_path):
+  report, state_path, _incident, events, confirmations, _powers = _run_restore(
+    tmp_path,
+    failure="target-live",
+  )
+
+  assert report is None
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert state["result"] == "INDETERMINATE"
+  assert state["completed_sector_bases"] == ["0xf8000"]
+  assert len(confirmations) == 1
+  assert not any(
+    event[0] == "target-writer" and len(event) > 1 and event[1] == "staged"
+    for event in events
+  )
+
+
+def test_restore_fails_closed_while_reviewed_live_read_pin_is_missing(monkeypatch):
+  import eps_patch.restore as restore_module
+
+  monkeypatch.setattr(restore_module, "LIVE_READ_ENVELOPE_SHA256", None)
+  with pytest.raises(restore_module.RestoreError, match="not built and pinned"):
+    restore_module._validate_live_read_payload(_restore_payloads(), patch_fx.TARGET)
 
 
 def test_restore_rejects_missing_original_backup_before_hardware(tmp_path):
@@ -635,7 +962,8 @@ def _write_prior_restore_state(layout, plan, *, result: str) -> Path:
     states = ("STARTED", "FAILED")
   elif result == "INDETERMINATE":
     states = (
-      "STARTED", "TARGET_ECHO_VERIFIED", "TARGET_ARMED", "INDETERMINATE",
+      "STARTED", "TARGET_ECHO_VERIFIED", "TARGET_LIVE_PRECHECKED",
+      "TARGET_ARMED", "INDETERMINATE",
     )
   else:
     states = ("STARTED", result)

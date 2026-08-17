@@ -13,7 +13,7 @@ from .manifest import TARGET, TargetManifest
 from .payload import PayloadError, SECURITY_ACCESS_SECRET, SpecializedPayloadImage
 from .protocol import (
   FrameType, OP_CRC_INTERMEDIATE, OP_CRC_PROBE, OP_FACI_PE_CYCLE, OP_FACI_UNLOCK,
-  OP_PATCH, OP_PATCH_CRC, OP_PATCH_V2, OP_PROBE, OP_RAM_ECHO, OP_RESTORE,
+  OP_LIVE_READ, OP_PATCH, OP_PATCH_CRC, OP_PATCH_V2, OP_PROBE, OP_RAM_ECHO, OP_RESTORE,
   OP_RESTORE_SECTOR, OP_VERIFY_CRC, OP_WRITE_CRC_CANDIDATE,
   OP_WRITE_TARGET_CANDIDATE,
   ProtocolError, StreamCollector, StreamResult,
@@ -390,7 +390,7 @@ class EcuTransport:
       OP_PROBE, OP_PATCH, OP_FACI_UNLOCK, OP_FACI_PE_CYCLE, OP_PATCH_V2,
       OP_RESTORE, OP_CRC_PROBE, OP_PATCH_CRC, OP_RAM_ECHO, OP_RESTORE_SECTOR,
       OP_VERIFY_CRC, OP_CRC_INTERMEDIATE, OP_WRITE_TARGET_CANDIDATE,
-      OP_WRITE_CRC_CANDIDATE,
+      OP_WRITE_CRC_CANDIDATE, OP_LIVE_READ,
     ):
       raise TransportError("unknown payload operation")
     expected_base = {

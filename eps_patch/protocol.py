@@ -25,6 +25,7 @@ OP_VERIFY_CRC = 11
 OP_CRC_INTERMEDIATE = 12
 OP_WRITE_TARGET_CANDIDATE = 13
 OP_WRITE_CRC_CANDIDATE = 14
+OP_LIVE_READ = 15
 WORD_SIZE = 4
 WORD_COUNT = 0x8000 // WORD_SIZE
 CRC_RECORDS = (
@@ -175,7 +176,7 @@ class StreamCollector:
       raise ProtocolError("expected operation must be an exact integer")
     if cls is StreamCollector and expected_operation in (
       OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_VERIFY_CRC, OP_PATCH_CRC,
-      OP_CRC_INTERMEDIATE,
+      OP_CRC_INTERMEDIATE, OP_LIVE_READ,
     ):
       return CrcStreamCollector(expected_operation=expected_operation)
     if cls is StreamCollector and expected_operation == OP_RESTORE_SECTOR:
@@ -428,14 +429,14 @@ class StreamCollector:
 
 
 class CrcStreamCollector:
-  """Fail-closed collector for the operation-specific two-region CRC stream."""
+  """Fail-closed collector for an operation-specific two-region stream."""
 
   _region_bases = (TARGET.sector_base, TARGET.crc_sector_base)
 
   def __init__(self, *, expected_operation: int):
     if type(expected_operation) is not int or expected_operation not in (
       OP_FACI_PE_CYCLE, OP_CRC_PROBE, OP_VERIFY_CRC, OP_PATCH_CRC,
-      OP_CRC_INTERMEDIATE,
+      OP_CRC_INTERMEDIATE, OP_LIVE_READ,
     ):
       raise ProtocolError("unknown CRC stream operation")
     self._expected_operation = expected_operation
@@ -470,8 +471,12 @@ class CrcStreamCollector:
       if frame_type is not FrameType.BEGIN0:
         raise ProtocolError("expected BEGIN0")
       self._validate_header(data, sequence=0)
-      if struct.unpack_from("<I", data, 4)[0] != TARGET.crc_range_start:
-        raise ProtocolError("BEGIN0 CRC range start does not match target")
+      expected_start = (
+        TARGET.sector_base
+        if self._expected_operation == OP_LIVE_READ else TARGET.crc_range_start
+      )
+      if struct.unpack_from("<I", data, 4)[0] != expected_start:
+        raise ProtocolError("BEGIN0 two-region start does not match target")
       self._state = "BEGIN1"
       return
     if self._state == "BEGIN1":
@@ -523,7 +528,12 @@ class CrcStreamCollector:
         )
       self._regions.append(RegionResult(self._region_bases[self._region_slot], bytes(self._region)))
       self._region_slot += 1
-      self._state = "REGION_BEGIN" if self._region_slot < 2 else "CRC_RECORD"
+      if self._region_slot < 2:
+        self._state = "REGION_BEGIN"
+      else:
+        self._state = (
+          "MAGIC" if self._expected_operation == OP_LIVE_READ else "CRC_RECORD"
+        )
       return
     if self._state == "CRC_RECORD":
       if frame_type is not FrameType.CRC_RECORD:
@@ -632,6 +642,8 @@ class CrcStreamCollector:
         dcra_values=values,
         dcra=DcraObservation.from_values(values),
       )
+    if self._expected_operation == OP_LIVE_READ:
+      return StreamResult(**common)
     return StreamResult(
       **common,
       crc_values=values,

@@ -321,6 +321,118 @@ def collect_crc_probe_frames(target_sector: bytes, crc_sector: bytes, crc_values
   return collect(crc_probe_frames(target_sector, crc_sector, crc_values, operation=operation), operation=operation)
 
 
+def live_read_frames(target_sector: bytes, crc_sector: bytes):
+  from eps_patch.protocol import FrameType, OP_LIVE_READ, PROTOCOL_VERSION
+
+  frames = [
+    bytes([FrameType.BEGIN0, PROTOCOL_VERSION, OP_LIVE_READ, 0])
+    + struct.pack("<I", 0x60000),
+    bytes([FrameType.BEGIN1, PROTOCOL_VERSION, OP_LIVE_READ, 1])
+    + struct.pack("<I", 2),
+  ]
+  for slot, (base, region) in enumerate(
+    ((0x60000, target_sector), (0xF8000, crc_sector)),
+  ):
+    frames.extend([
+      bytes([FrameType.REGION_BEGIN, PROTOCOL_VERSION, OP_LIVE_READ, slot])
+      + struct.pack("<I", base),
+      bytes([FrameType.REGION_LENGTH, PROTOCOL_VERSION, OP_LIVE_READ, slot])
+      + struct.pack("<I", len(region)),
+    ])
+    frames.extend(
+      bytes([FrameType.DATA]) + struct.pack("<H", index) + b"\x00"
+      + region[index * 4:index * 4 + 4]
+      for index in range(len(region) // 4)
+    )
+    frames.append(
+      bytes([FrameType.REGION_END, PROTOCOL_VERSION, OP_LIVE_READ, slot])
+      + struct.pack("<I", binascii.crc32(region))
+    )
+  frames.extend([
+    bytes([FrameType.MAGIC, 0, 0, 0]) + struct.pack("<I", 0x5AA5A55A),
+    bytes([FrameType.MAGIC, 1, 0, 0]) + struct.pack("<I", 0x5AA5A55A),
+    bytes([FrameType.STATUS, 1, 0, 0]) + bytes(4),
+    bytes([FrameType.END, 0, 0, 0])
+    + struct.pack("<I", binascii.crc32(target_sector + crc_sector)),
+  ])
+  return frames
+
+
+def test_live_read_collects_only_two_complete_fixed_regions():
+  from eps_patch.protocol import OP_LIVE_READ, RegionResult
+
+  target = bytes([0x31]) * 0x8000
+  crc = bytes([0xA5]) * 0x8000
+
+  result = collect(live_read_frames(target, crc), operation=OP_LIVE_READ)
+
+  assert result.operation == OP_LIVE_READ
+  assert result.sector is None
+  assert result.regions == (
+    RegionResult(0x60000, target),
+    RegionResult(0xF8000, crc),
+  )
+  assert result.magic_words == (0x5AA5A55A, 0x5AA5A55A)
+  assert result.statuses == ((1, 0),)
+  assert result.faci_values == ()
+  assert result.crc_values == () and result.crc is None
+  assert result.dcra_values == () and result.dcra is None
+
+
+@pytest.mark.parametrize(
+  "mutation",
+  (
+    "wrong-begin-base", "wrong-region-base", "missing-region", "truncated-data",
+    "extra-region", "nonzero-status", "bad-combined-crc",
+  ),
+)
+def test_live_read_rejects_ambiguous_or_non_read_only_result(mutation):
+  from eps_patch.protocol import FrameType, OP_LIVE_READ, ProtocolError, PROTOCOL_VERSION
+
+  frames = live_read_frames(bytes(0x8000), bytes([0xFF]) * 0x8000)
+  if mutation == "wrong-begin-base":
+    frames[0] = frames[0][:4] + struct.pack("<I", 0x18000)
+  elif mutation == "wrong-region-base":
+    second = next(
+      index for index, frame in enumerate(frames)
+      if frame[0] == FrameType.REGION_BEGIN and frame[3] == 1
+    )
+    frames[second] = frames[second][:4] + struct.pack("<I", 0x60000)
+  elif mutation == "missing-region":
+    second = next(
+      index for index, frame in enumerate(frames)
+      if frame[0] == FrameType.REGION_BEGIN and frame[3] == 1
+    )
+    magic = next(
+      index for index, frame in enumerate(frames)
+      if frame[0] == FrameType.MAGIC
+    )
+    del frames[second:magic]
+  elif mutation == "truncated-data":
+    del frames[5]
+  elif mutation == "extra-region":
+    magic = next(
+      index for index, frame in enumerate(frames)
+      if frame[0] == FrameType.MAGIC
+    )
+    frames.insert(
+      magic,
+      bytes([FrameType.REGION_BEGIN, PROTOCOL_VERSION, OP_LIVE_READ, 2])
+      + struct.pack("<I", 0x60000),
+    )
+  elif mutation == "nonzero-status":
+    status = next(
+      index for index, frame in enumerate(frames)
+      if frame[0] == FrameType.STATUS
+    )
+    frames[status] = frames[status][:4] + struct.pack("<I", 1)
+  else:
+    frames[-1] = frames[-1][:4] + struct.pack("<I", 0)
+
+  with pytest.raises(ProtocolError):
+    collect(frames, operation=OP_LIVE_READ)
+
+
 def test_crc_probe_collects_two_exact_regions_and_crc_observations():
   from eps_patch.protocol import CrcObservation, OP_CRC_PROBE, RegionResult
 

@@ -164,7 +164,8 @@ static uint32_t crc32_update(uint32_t crc, uint8_t value) {
   return crc;
 }
 
-#if !defined(PATCH_V2_PAYLOAD) && !defined(CRC_PAYLOAD)
+#if !defined(PATCH_V2_PAYLOAD) && !defined(CRC_PAYLOAD) \
+  && !defined(LIVE_READ_PAYLOAD)
 static int stream_sector(
   const volatile uint8_t *sector,
   const struct runtime_guard *guard,
@@ -194,7 +195,8 @@ static int stream_sector(
 #if !defined(PROBE_PAYLOAD) && !defined(PROBE_UNLOCK_PAYLOAD) \
   && !defined(PROBE_PE_CYCLE_PAYLOAD) && !defined(PATCH_V2_PAYLOAD) \
   && !defined(CRC_PAYLOAD) && !defined(RAM_ECHO_PAYLOAD) \
-  && !defined(RESTORE_SECTOR_PAYLOAD) && !defined(CANDIDATE_WRITER_PAYLOAD)
+  && !defined(RESTORE_SECTOR_PAYLOAD) && !defined(CANDIDATE_WRITER_PAYLOAD) \
+  && !defined(LIVE_READ_PAYLOAD)
 static int send_success_trailer(
   uint8_t operation,
   const volatile uint8_t *sector,

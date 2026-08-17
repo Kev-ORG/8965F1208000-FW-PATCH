@@ -219,6 +219,24 @@ def test_candidate_writer_trigger_rejects_cross_direction_base(operation, base):
       transport.trigger(operation=operation, new_uds=False, sector_base=base)
 
 
+def test_live_read_trigger_uses_fixed_default_base_and_rejects_override():
+  from eps_patch.protocol import OP_LIVE_READ
+  from eps_patch.transport import EcuTransport, TransportError
+
+  isotp_calls = []
+  with EcuTransport(bindings=fake_bindings(isotp_calls)) as transport:
+    transport.trigger(operation=OP_LIVE_READ, new_uds=False)
+    with pytest.raises(TransportError, match="base is not allowed"):
+      transport.trigger(
+        operation=OP_LIVE_READ,
+        new_uds=False,
+        sector_base=0xF8000,
+      )
+
+  assert len(isotp_calls) == 1
+  assert isotp_calls[0][0][1][-8:] == struct.pack("!II", 0x60000, 0x8000)
+
+
 @pytest.mark.parametrize(
   "address,length",
   ((0xFEBF1000, 0x8000), (0xFEBF2000, 0x7FFF), (0xFEBF9000, 0x8000)),

@@ -16,6 +16,7 @@ from enum import Enum
 from pathlib import Path
 
 from .artifacts import _atomic_create, sha256_bytes
+from .crc import build_crc_candidate
 from .evidence import EvidenceError, TrustedProbeEvidence, load_probe_pass
 from .manifest import TARGET, TargetManifest
 from .operation_lock import exclusive_operation
@@ -26,13 +27,17 @@ from .payload import (
   build_specialized_payload_image,
 )
 from .power import request_power_cycle
-from .protocol import OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult
+from .protocol import (
+  OP_LIVE_READ, OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult,
+)
 from .transport import BootloaderIdentity, EcuIdentity, RamBlob
 
 
 RAM_ECHO_ENVELOPE_SHA256 = (
   "c938bfbd82e8f55c1597f0238c5d55213eea2196a04ed9594b298b37ac11b268"
 )
+# Set only after the reviewed V850 binary and its complete envelope are built.
+LIVE_READ_ENVELOPE_SHA256: str | None = None
 RESTORE_INTENT_MAGIC = 0x52535452
 RESTORE_INTENT_SCHEMA = 1
 RESTORE_INTENT_LENGTH = 0x80
@@ -117,9 +122,11 @@ class RestoreError(RuntimeError):
 class RestoreState(str, Enum):
   STARTED = "STARTED"
   CRC_ECHO_VERIFIED = "CRC_ECHO_VERIFIED"
+  CRC_LIVE_PRECHECKED = "CRC_LIVE_PRECHECKED"
   CRC_ARMED = "CRC_ARMED"
   CRC_COMMITTED = "CRC_COMMITTED"
   TARGET_ECHO_VERIFIED = "TARGET_ECHO_VERIFIED"
+  TARGET_LIVE_PRECHECKED = "TARGET_LIVE_PRECHECKED"
   TARGET_ARMED = "TARGET_ARMED"
   TARGET_COMMITTED = "TARGET_COMMITTED"
   FAILED = "FAILED"
@@ -146,6 +153,20 @@ class RestoreBackup:
   data: bytes
   sha256: str
   source_adjustment: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class LiveReadClassification:
+  target_state: str
+  crc_state: str
+  target_sha256: str
+  crc_sha256: str
+
+  def as_evidence(self) -> dict[str, dict[str, str]]:
+    return {
+      "target": {"state": self.target_state, "sha256": self.target_sha256},
+      "crc": {"state": self.crc_state, "sha256": self.crc_sha256},
+    }
 
 
 class _StateRecorder:
@@ -350,6 +371,7 @@ def _run_restore_locked(
   if semantic_probe_digest != plan.probe_report_sha256:
     raise RestoreError("patch incident is not bound to the fixed probe evidence")
   ram_echo = _validate_ram_echo_payload(payloads, target)
+  live_read = _validate_live_read_payload(payloads, target)
   restore_template = _validate_restore_template(templates)
   backups = tuple(_backup_for_base(trusted, base, target) for base in plan.sector_bases)
   restore_images = tuple(
@@ -403,11 +425,48 @@ def _run_restore_locked(
         },
       )
 
+      live_precheck_state = (
+        RestoreState.CRC_LIVE_PRECHECKED
+        if backup.label == "crc" else RestoreState.TARGET_LIVE_PRECHECKED
+      )
+      request_power_cycle(
+        echo_state.value,
+        live_precheck_state.value,
+        power_cycle_checkpoint,
+      )
+      with transport_factory() as transport:
+        live_identity = transport.read_bootloader_identity()
+        _require_boot_identity(live_identity, trusted.identity)
+        live_result = transport.run_payload(
+          live_read,
+          operation=OP_LIVE_READ,
+          new_uds=new_uds,
+        )
+      live_classification = _validate_live_precheck(
+        live_result,
+        plan=plan,
+        trusted=trusted,
+        completed=tuple(recorder.completed),
+        target=target,
+      )
+      recorder.record(
+        live_precheck_state,
+        evidence={
+          "identity": _boot_identity_record(live_identity),
+          "payload": _payload_record(live_read),
+          "live_sectors": live_classification.as_evidence(),
+        },
+      )
+
       arm_state = (
         RestoreState.CRC_ARMED
         if backup.label == "crc" else RestoreState.TARGET_ARMED
       )
-      request_power_cycle(echo_state.value, arm_state.value, power_cycle_checkpoint)
+      request_power_cycle(
+        live_precheck_state.value,
+        arm_state.value,
+        power_cycle_checkpoint,
+      )
       with transport_factory() as transport:
         writer_identity = transport.read_bootloader_identity()
         _require_boot_identity(writer_identity, trusted.identity)
@@ -667,7 +726,8 @@ def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
   for label in order:
     upper = label.upper()
     happy_path.extend((
-      f"{upper}_ECHO_VERIFIED", f"{upper}_ARMED", f"{upper}_COMMITTED",
+      f"{upper}_ECHO_VERIFIED", f"{upper}_LIVE_PRECHECKED",
+      f"{upper}_ARMED", f"{upper}_COMMITTED",
     ))
   happy_path.append("PASS")
   happy_index = 0
@@ -806,6 +866,29 @@ def _validate_ram_echo_payload(payloads, target: TargetManifest):
   return payload
 
 
+def _validate_live_read_payload(payloads, target: TargetManifest):
+  if LIVE_READ_ENVELOPE_SHA256 is None:
+    raise RestoreError("reviewed live_read payload is not built and pinned")
+  payload = _container_value(payloads, "live_read", label="restore payload set")
+  try:
+    name = payload.name
+    envelope = payload.envelope
+    digest = payload.sha256
+  except AttributeError as exc:
+    raise RestoreError("live_read payload image is malformed") from exc
+  if name != "live_read":
+    raise RestoreError("live_read payload image has the wrong name")
+  if type(envelope) is not bytes or len(envelope) != target.envelope_length:
+    raise RestoreError("live_read payload envelope is not exact")
+  if (
+    type(digest) is not str
+    or hashlib.sha256(envelope).hexdigest() != digest
+    or digest != LIVE_READ_ENVELOPE_SHA256
+  ):
+    raise RestoreError("live_read payload is not the exact reviewed envelope")
+  return payload
+
+
 def _validate_restore_template(templates) -> bytes:
   template = _container_value(
     templates, "restore_sector", label="restore template set",
@@ -912,6 +995,113 @@ def _validate_ram_echo_result(
     or result.dcra is not None
   ):
     raise RestoreError("RAM echo did not prove the complete exact original backup")
+
+
+def _validate_live_precheck(
+  result: object,
+  *,
+  plan: RestorePlan,
+  trusted: TrustedProbeEvidence,
+  completed: tuple[int, ...],
+  target: TargetManifest,
+) -> LiveReadClassification:
+  if type(plan) is not RestorePlan or type(trusted) is not TrustedProbeEvidence:
+    raise RestoreError("live-read precheck inputs are not exact trusted records")
+  if type(completed) is not tuple or any(type(base) is not int for base in completed):
+    raise RestoreError("live-read completed-sector progress is malformed")
+  if (
+    type(result) is not StreamResult
+    or result.operation != OP_LIVE_READ
+    or result.sector is not None
+    or result.magic_words != (target.magic_word, target.magic_word)
+    or result.statuses != ((1, 0),)
+    or result.faci_values
+    or type(result.regions) is not tuple
+    or len(result.regions) != 2
+    or any(type(region) is not RegionResult for region in result.regions)
+    or tuple(region.base for region in result.regions)
+      != (target.sector_base, target.crc_sector_base)
+    or any(
+      type(region.data) is not bytes or len(region.data) != target.sector_length
+      for region in result.regions
+    )
+    or result.crc_values
+    or result.crc is not None
+    or result.dcra_values
+    or result.dcra is not None
+  ):
+    raise RestoreError("live-read result is malformed or ambiguous")
+
+  try:
+    candidate = build_crc_candidate(
+      trusted.target_sector,
+      trusted.crc_sector,
+      target.crc_patched_adjust_word.to_bytes(4, "little"),
+      target=target,
+    )
+  except (TypeError, ValueError) as exc:
+    raise RestoreError("live-read candidates cannot be derived from probe backups") from exc
+  if (
+    sha256_bytes(candidate.target_source) != target.original_sha256
+    or sha256_bytes(candidate.target_final) != target.patched_sha256
+    or candidate.old_adjustment
+      != target.crc_original_adjust_word.to_bytes(4, "little")
+    or candidate.new_adjustment
+      != target.crc_patched_adjust_word.to_bytes(4, "little")
+  ):
+    raise RestoreError("live-read candidates contradict the fixed target manifest")
+
+  target_live, crc_live = (region.data for region in result.regions)
+
+  def classify(live: bytes, source: bytes, patched: bytes) -> str:
+    if live == source:
+      return "source"
+    if live == patched:
+      return "candidate"
+    return "other"
+
+  target_state = classify(
+    target_live, candidate.target_source, candidate.target_final,
+  )
+  crc_state = classify(crc_live, candidate.crc_source, candidate.crc_final)
+
+  if completed == (target.crc_sector_base,):
+    if plan.restore_order != ("crc", "target"):
+      raise RestoreError("live-read progress contradicts the persisted incident scope")
+    allowed = ({"candidate"}, {"source"})
+  elif completed:
+    raise RestoreError("live-read progress contradicts the persisted incident scope")
+  elif (
+    plan.incident_result == "TARGET_INDETERMINATE"
+    and plan.restore_order == ("target",)
+  ):
+    allowed = ({"source", "candidate", "other"}, {"source"})
+  elif (
+    plan.incident_result == "RECOVERY_REQUIRED"
+    and plan.restore_order == ("target",)
+  ):
+    allowed = ({"candidate"}, {"source"})
+  elif (
+    plan.incident_result == "CRC_INDETERMINATE"
+    and plan.restore_order == ("crc", "target")
+  ):
+    allowed = ({"candidate"}, {"source", "candidate", "other"})
+  elif (
+    plan.incident_result == "RECOVERY_REQUIRED"
+    and plan.restore_order == ("crc", "target")
+  ):
+    allowed = ({"candidate"}, {"candidate"})
+  else:
+    raise RestoreError("live-read plan has no canonical persisted incident policy")
+  if target_state not in allowed[0] or crc_state not in allowed[1]:
+    raise RestoreError("live flash state contradicts the persisted incident scope")
+
+  return LiveReadClassification(
+    target_state=target_state,
+    crc_state=crc_state,
+    target_sha256=sha256_bytes(target_live),
+    crc_sha256=sha256_bytes(crc_live),
+  )
 
 
 def _validate_restore_result(
@@ -1066,7 +1256,9 @@ def _fsync_directory(path: Path) -> None:
 
 
 __all__ = [
+  "LIVE_READ_ENVELOPE_SHA256",
   "RAM_ECHO_ENVELOPE_SHA256",
+  "LiveReadClassification",
   "RestoreError",
   "RestorePlan",
   "RestoreState",

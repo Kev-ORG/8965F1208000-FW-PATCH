@@ -9,17 +9,18 @@
     "write_crc_candidate.c": "f1ce18c44f6230f545a9bfe5ba4e851223fc8f3c98af63d237c0274acf233e0f",
     "ram_echo.c": "9d9e4d7b29ee2d20af1c74de71176356a728792bed14383013ff525b95701740",
     "restore_sector.c": "dac734dbbb543484cfaf7831fbc6d8245cebaeef2485c9bf56a72c832361a153",
+    "live_read.c": "c7e8aad79d44b9ec335ee90eb9974175b66f5004b88b8e7487c727c6cec6135a",
     "common.h": "0ce590efe4cd04f91de77eb599441f4e0c96518a58dd5ab0a394cd54b96768f3",
     "protocol.h": "ee3c925d0a7bfd98078f83a633cdcab05eb4da87b87f71540cd1ea18b1aeda10",
     "dcra.h": "87e0a9a97078b88757543381f954afff6719a30963d0313e5758b7bc6bbfabb6",
-    "patch_common.h": "5a07e7a2c1a7279cc8847487af5e3c551b23df3a9ce95da2cf6b54ff5596c991",
-    "patch_protocol.h": "756bd6b0612c98b604c1530bf47d791c6fea20a43200280f96c66f405d6448c6",
+    "patch_common.h": "045cb5c5fa75fa9d4bf20395953995a5c03d756e72fe5d3c776e7863e3186c76",
+    "patch_protocol.h": "0f3453907819af9814d29b205220e3efb5ba61c476526858580266a9ce870529",
     "crc_runtime.h": "6d82357db91a364b9cfc9d9fce0421e1daef377fabc1697caf6d257bafd15af5",
     "candidate_writer.h": "5ffa020850f09c742e850f7c4259f7aa5762610cf7357a7f6fefe198ab3a98bc",
     "faci_dual.h": "90a3c35e2dbcfd96a7801daa20dfb44821753d2bf55d3684a2fca094dab4ea1e",
     "linker.ld": "7921a5eb2c2ca853e88e505da01dc86bff8779be1678ad85756cabe90f44059a",
     "linker_intent.ld": "29c0cc4c8c7a0efc9989b97883cb36986b8f1ffa7dbcfe6249470295dd13366b",
-    "build.sh": "5e18daf8b4d73574633acf457aaf8e0c82008b3fd64996a1c0ef64f256617af3"
+    "build.sh": "c3ebf1f90ff88923489834acd0afa5021301b96a756e215286e582586c35366e"
   },
   "payloads": {
     "probe_pe_cycle": {"size": 2864, "sha256": "d3a3cf534930b1b5e58642b3e1bd2aa10f3c9352da9852bd04cc21cdeee6b4a1", "entrypoint": "0xfebf0000"},

@@ -11,7 +11,7 @@ BUILD = PAYLOAD / "build"
 REVIEWED_SOURCES = (
   "probe_pe_cycle.c", "crc_probe.c", "crc_intermediate.c", "crc_verify.c",
   "write_target_candidate.c", "write_crc_candidate.c", "ram_echo.c",
-  "restore_sector.c", "common.h", "protocol.h",
+  "restore_sector.c", "live_read.c", "common.h", "protocol.h",
   "dcra.h", "patch_common.h", "patch_protocol.h", "crc_runtime.h",
   "candidate_writer.h", "faci_dual.h", "linker.ld", "linker_intent.ld", "build.sh",
 )
@@ -61,6 +61,25 @@ def test_manifest_binds_every_retained_review_source():
   for name in REVIEWED_SOURCES:
     assert manifest["sources"][name] == hashlib.sha256((PAYLOAD / name).read_bytes()).hexdigest()
   assert manifest["toolchain"] == {"gcc": "13.2.0", "binutils": "2.41"}
+
+
+def test_live_read_is_build_ready_without_an_invented_binary_pin():
+  require_cross_build()
+  from eps_patch.payload import BUILD_READY_PAYLOADS, BUILT_PAYLOADS
+
+  script = (PAYLOAD / "build.sh").read_text(encoding="utf-8")
+  manifest = json.loads((BUILD / "manifest.json").read_text(encoding="utf-8"))
+  assert BUILD_READY_PAYLOADS == ("live_read",)
+  assert "live_read" not in BUILT_PAYLOADS
+  assert "live_read" not in manifest["payloads"]
+  assert not (BUILD / "live_read.bin").exists()
+  assert manifest["sources"]["live_read.c"] == hashlib.sha256(
+    (PAYLOAD / "live_read.c").read_bytes(),
+  ).hexdigest()
+  assert script.count("write_crc_candidate ram_echo restore_sector live_read") == 2
+  assert "! -name live_read.bin" in script
+  assert "last_payload=live_read" in script
+  assert '[ "$name" = "$last_payload" ] && comma=' in script
 
 
 def test_probe_binary_contains_entrypoint_and_exact_original_context():
