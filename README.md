@@ -28,6 +28,8 @@ Probe 不擦除、不写入 Flash。只有所有检查通过才会原子创建�
 
 PASS 代表身份、两份原始扇区、原始指令上下文、FACI `PRE → UNLOCKED → WINDOWS → CONFIGURED → RESTORED`、清理回 idle、DCRA/CRC 观察和主机验证全部通过。连接成功、终端输出或零散文件都不等于 PASS。已有 probe 目录时，命令会在任何硬件操作前拒绝运行；请保留它，它是恢复所绑定的原厂备份。
 
+如果 probe 已完整回传但 outcome 不是 PASS，例如 `primary=3`，它仍然不会创建 `probe/` 可信证据。脚本会在终端打印 DCRA 的进入/退出 `CTL` 和 `COUT`，并原子覆盖写入仅诊断文件：`/data/eps-patch/artifacts/failures/last-probe-failure.json`。该文件一次收集身份、payload、outcome、magic、完整 DCRA 观察、五个 FACI 快照及两个扇区的地址/长度/SHA-256/CRC32 摘要；不包含扇区内容，不能用于 patch 或 restore。保留该文件和终端输出，再决定是否需要适配 DCRA 恢复行为；不要为获取额外寄存器信息而反复运行 probe。
+
 ### 2. Patch：两扇区写入
 
 ```bash
@@ -78,6 +80,8 @@ python3.12 eps_patch.py probe
 Run `probe` once before `patch` or `restore`. Probe is read-only: it does not erase or program Flash. A semantic `PASS` atomically installs the fixed report, the original target and CRC-sector backups, and recovery metadata under the fixed artifact directory. It proves identity, original instruction context, complete FACI P/E-cycle snapshots and cleanup, DCRA/CRC observations, and host validation. A transport connection, terminal output, or partial files are not a PASS.
 
 If fixed probe evidence already exists, the command rejects it before any preflight or transport action. Preserve it: it is the original backup set bound to recovery. If probe fails, correct the environment or the supported-EPS mismatch; do not proceed to patch and do not edit the stored evidence.
+
+When a complete probe result has a non-PASS outcome, such as `primary=3`, the command still does not create `probe` evidence. It prints the DCRA entry/exit `CTL` and `COUT` values and atomically replaces the untrusted diagnostic at `/data/eps-patch/artifacts/failures/last-probe-failure.json`. That one file captures identity, payload, outcome, magic words, the complete DCRA observation, five FACI snapshots, and address/length/SHA-256/CRC32 summaries for both returned sectors. It contains no sector bytes and cannot authorize patch or restore. Keep the file and terminal output before deciding whether DCRA restoration needs adaptation; do not rerun probe merely to collect more register values.
 
 ### 2. Patch
 

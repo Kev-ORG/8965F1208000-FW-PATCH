@@ -18,6 +18,7 @@ def test_readme_documents_the_complete_comma_local_lifecycle():
     assert command in readme
   for required in (
     "/data/eps-patch/artifacts",
+    "/data/eps-patch/artifacts/failures/last-probe-failure.json",
     "Run `probe` once before `patch` or `restore`.",
     "semantic `PASS`",
     "Panda serial",
@@ -28,6 +29,11 @@ def test_readme_documents_the_complete_comma_local_lifecycle():
     "CRC sector (`0xf8000`) first, then the target sector (`0x60000`)",
     "external programmer",
     "professional recovery",
+  ):
+    assert required in normalized
+  for required in (
+    "untrusted diagnostic",
+    "does not create `probe` evidence",
   ):
     assert required in normalized
   assert "Press Enter" not in readme
