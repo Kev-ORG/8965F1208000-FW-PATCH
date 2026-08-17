@@ -54,6 +54,95 @@ def test_readme_documents_the_complete_comma_local_lifecycle():
   assert not [phrase for phrase in forbidden if phrase in readme]
 
 
+def test_readme_is_complete_english_then_complete_chinese():
+  """Catch a summary translation, missing chapter, or Chinese-first rewrite."""
+  readme = (ROOT / "README.md").read_text(encoding="utf-8")
+  headings = (
+    "# English",
+    "## 0. Risk Warning",
+    "## 1. Detailed Operating Guide",
+    "## 2. Design Principles and How It Works",
+    "## 3. Cross-Compilation and Porting to Other Bench ECUs",
+    "## 4. FAQ",
+    "# 中文",
+    "## 0. 风险警告",
+    "## 1. 详细操作指南",
+    "## 2. 脚本设计原则和工作原理",
+    "## 3. 交叉编译环境与其他台架车型移植",
+    "## 4. 常见问题",
+  )
+
+  positions = [readme.index(heading) for heading in headings]
+
+  assert positions == sorted(positions)
+  assert all(readme.count(heading) == 1 for heading in headings)
+
+
+def test_readme_documents_sync_restart_build_and_porting_contracts():
+  """Catch operator guidance that loses artifacts or reuses ECU-specific data."""
+  readme = (ROOT / "README.md").read_text(encoding="utf-8")
+  normalized = " ".join(readme.split())
+
+  for required in (
+    "rsync -av",
+    "/data/eps-patch/app/",
+    "/data/eps-patch/artifacts/",
+    "reconnect SSH",
+    "rerun the same command",
+    "重新连接 SSH",
+    "重新运行同一条命令",
+    "docker build -t v850-gcc:latest v850-cross-build",
+    "TOOL_PREFIX=v850-elf- ./build.sh",
+    "Ubuntu 22.04",
+    "binutils 2.41",
+    "GCC 13.2.0",
+    "RH850",
+    "not portable",
+    "不可移植",
+  ):
+    assert required in normalized
+  assert "Press Enter" not in readme
+  assert "按 Enter" not in readme
+
+
+def test_readme_has_matched_recovery_faq_coverage():
+  """Catch omission of a recovery decision from either language guide."""
+  readme = (ROOT / "README.md").read_text(encoding="utf-8")
+  english_start = readme.index("# English")
+  chinese_start = readme.index("# 中文")
+  english = readme[english_start:chinese_start]
+  chinese = readme[chinese_start:]
+
+  assert english.count("\n### Q") == 22
+  assert chinese.count("\n### 问") == 22
+  for required in (
+    "SSH",
+    "TARGET_INDETERMINATE",
+    "CRC_INDETERMINATE",
+    "restore becomes indeterminate",
+    "unexpected external power loss",
+    "4 KiB",
+    "0xE0000",
+    "Flash-level PASS",
+    "rebuild payload",
+    "another RH850",
+  ):
+    assert required in english
+  for required in (
+    "SSH",
+    "TARGET_INDETERMINATE",
+    "CRC_INDETERMINATE",
+    "restore 变为不确定状态",
+    "意外外部断电",
+    "4 KiB",
+    "0xE0000",
+    "Flash 级 PASS",
+    "重新构建 payload",
+    "其他 RH850",
+  ):
+    assert required in chinese
+
+
 def test_root_cause_document_preserves_the_two_sector_safety_rationale():
   document = (ROOT / "docs" / "boot-crc-root-cause.md").read_text(
     encoding="utf-8",
