@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -21,6 +22,10 @@ from eps_patch.restore import RestoreError, run_restore
 from eps_patch.transport import EcuTransport, TransportError
 
 
+class CliError(RuntimeError):
+  """The public command cannot safely interact with its operator."""
+
+
 _BUILD_DIRECTORY = Path(__file__).resolve().parent / "payload" / "build"
 _PAYLOAD_NAMES = (
   "probe_pe_cycle",
@@ -35,6 +40,7 @@ _TEMPLATE_NAMES = (
   "restore_sector",
 )
 _EXPECTED_ERRORS = (
+  CliError,
   ArtifactError,
   EvidenceError,
   PreflightError,
@@ -44,6 +50,56 @@ _EXPECTED_ERRORS = (
   PatchError,
   RestoreError,
 )
+
+
+def _confirm_destructive(transaction: str) -> str:
+  """Show one transaction clearly and authorize it only with exact `YES`."""
+  if type(transaction) is not str or not transaction:
+    raise CliError("destructive transaction summary is missing")
+  print("\n========== DESTRUCTIVE OPERATION / 破坏性操作 ==========", flush=True)
+  print(transaction, flush=True)
+  print("输入大写 YES 继续 / Type YES to continue: ", end="", flush=True)
+  try:
+    answer = input()
+  except EOFError as exc:
+    raise CliError(
+      "destructive confirmation interactive input ended before YES"
+    ) from exc
+  if answer != "YES":
+    raise CliError("destructive confirmation requires exact uppercase YES")
+  return transaction
+
+
+def _print_power_cycle(message: str) -> None:
+  """Flush one persisted power-cycle instruction before this process exits."""
+  if type(message) is not str or not message:
+    raise CliError("power-cycle instruction is missing")
+  print(message, end="" if message.endswith("\n") else "\n", flush=True)
+  print(
+    "本阶段状态已保存，当前命令将退出；断电重启后重新运行同一命令。\n"
+    "Checkpoint saved; this command will exit. Rerun it after the power cycle.",
+    flush=True,
+  )
+
+
+def _require_foreground_interactive_terminal() -> None:
+  """Require visible terminal I/O owned by this foreground process group."""
+  if not sys.stdin.isatty() or not sys.stdout.isatty():
+    raise CliError(
+      "patch and restore require visible input and output on an interactive TTY "
+      "before any Panda connection"
+    )
+  try:
+    foreground_group = os.tcgetpgrp(sys.stdin.fileno())
+    process_group = os.getpgrp()
+  except (AttributeError, OSError, ValueError) as exc:
+    raise CliError(
+      "patch and restore cannot verify the foreground interactive TTY"
+    ) from exc
+  if foreground_group != process_group:
+    raise CliError(
+      "patch and restore must run in the foreground interactive TTY"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -131,13 +187,15 @@ def main() -> int:
   """Parse, run one workflow, and translate known failures into exit status 2."""
   args = build_parser().parse_args()
   try:
+    if args.command in ("patch", "restore"):
+      _require_foreground_interactive_terminal()
     report = dispatch(
       args,
       layout=ArtifactLayout(DEFAULT_ARTIFACT_ROOT),
       preflight=run_preflight,
       transport_factory=lambda: EcuTransport(serial=args.serial),
-      confirmation=input,
-      power_cycle_checkpoint=print,
+      confirmation=_confirm_destructive,
+      power_cycle_checkpoint=_print_power_cycle,
     )
   except _EXPECTED_ERRORS as exc:
     print(f"ERROR: {exc}", file=sys.stderr)
