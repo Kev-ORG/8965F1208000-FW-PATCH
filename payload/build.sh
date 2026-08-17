@@ -6,7 +6,7 @@ build_dir=build
 shellcode_limit=4048
 mkdir -p "$build_dir"
 
-for name in probe_pe_cycle crc_probe crc_intermediate crc_verify write_target_candidate write_crc_candidate ram_echo restore_sector live_read; do
+for name in probe_pe_cycle crc_probe crc_intermediate crc_verify write_target_candidate write_crc_candidate restore_sector live_read; do
   "${tool_prefix}gcc" -Oz -ffreestanding -fno-builtin -fno-stack-protector \
     -fno-tree-loop-distribute-patterns -mno-prolog-function \
     -ffunction-sections -fdata-sections -Wall -Wextra -Werror \
@@ -32,7 +32,7 @@ sha256_file() { sha256sum "$1" | cut -d ' ' -f 1; }
 
 printf '{\n  "toolchain": {"gcc": "%s", "binutils": "%s"},\n  "sources": {\n' \
   "$gcc_version" "$binutils_version" > "$build_dir/manifest.json"
-sources='probe_pe_cycle.c crc_probe.c crc_intermediate.c crc_verify.c write_target_candidate.c write_crc_candidate.c ram_echo.c restore_sector.c live_read.c common.h protocol.h dcra.h patch_common.h patch_protocol.h crc_runtime.h candidate_writer.h faci_dual.h linker.ld linker_intent.ld build.sh'
+sources='probe_pe_cycle.c crc_probe.c crc_intermediate.c crc_verify.c write_target_candidate.c write_crc_candidate.c restore_sector.c live_read.c common.h protocol.h dcra.h patch_common.h patch_protocol.h crc_runtime.h candidate_writer.h faci_dual.h linker.ld linker_intent.ld build.sh'
 last_source=build.sh
 for source in $sources; do
   comma=,
@@ -42,7 +42,7 @@ for source in $sources; do
 done
 printf '  },\n  "payloads": {\n' >> "$build_dir/manifest.json"
 last_payload=live_read
-for name in probe_pe_cycle crc_probe crc_intermediate crc_verify write_target_candidate write_crc_candidate ram_echo restore_sector live_read; do
+for name in probe_pe_cycle crc_probe crc_intermediate crc_verify write_target_candidate write_crc_candidate restore_sector live_read; do
   size=$(wc -c < "$build_dir/$name.bin" | tr -d ' ')
   digest=$(sha256_file "$build_dir/$name.bin")
   comma=,
@@ -64,7 +64,6 @@ find "$build_dir" -type f \
   ! -name crc_verify.bin \
   ! -name write_target_candidate.bin \
   ! -name write_crc_candidate.bin \
-  ! -name ram_echo.bin \
   ! -name restore_sector.bin \
   ! -name live_read.bin \
   ! -name manifest.json \

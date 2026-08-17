@@ -43,10 +43,10 @@ from .transport import BootloaderIdentity, EcuIdentity
 
 
 CRC_PROBE_ENVELOPE_SHA256 = (
-  "bb8065479d339129f8ee1bfad44ed67c730504bf95fd13696eff7ea857fd36aa"
+  "34ebb36ee81b714c3ef42f24e5f527654ab1939f0b39e208701cbed43dd6f840"
 )
 CRC_INTERMEDIATE_ENVELOPE_SHA256 = (
-  "01ece86b3ecda3cb34d684a00406d9222667cd656740f0f02754300979bdd095"
+  "bf61cb3d4a6895857cedc9ca647407ce40b57a8dd206be835cbc8b8220feebec"
 )
 CRC_VERIFY_ENVELOPE_SHA256 = (
   "99c69ca2bbec2eac594349cf375d4a917c61acff18a412cc72031871776cb27e"
@@ -294,7 +294,7 @@ def _run_patch_locked(
           "identity": _identity_record(current_identity),
           "target_readback_sha256": sha256_bytes(precheck_target),
           "crc_readback_sha256": sha256_bytes(precheck_crc),
-          "staged_target_crc32": f"0x{target_candidate_crc:08x}",
+          "target_candidate_crc32": f"0x{target_candidate_crc:08x}",
           "payload": _payload_record(patch_payloads["crc_probe"]),
         },
       )
@@ -304,7 +304,7 @@ def _run_patch_locked(
         candidate_crc32=target_candidate_crc,
         live_target_instruction=target.original_instruction,
         live_adjustment=candidate.old_adjustment,
-        staged_context=target.patched_instruction,
+        candidate_context=target.patched_instruction,
         candidate_adjustment=candidate.new_adjustment,
       )
       target_writer = build_target_candidate_payload_image(
@@ -318,7 +318,7 @@ def _run_patch_locked(
         sector_base=target.sector_base,
         source=candidate.target_source,
         candidate=candidate.target_final,
-        staged_crc32=target_candidate_crc,
+        candidate_crc32=target_candidate_crc,
         envelope_sha256=target_writer.payload.sha256,
       )
       with transport_factory() as transport:
@@ -337,7 +337,7 @@ def _run_patch_locked(
             "sector_base": f"0x{target.sector_base:x}",
             "source_sha256": sha256_bytes(candidate.target_source),
             "candidate_sha256": sha256_bytes(candidate.target_final),
-            "staged_crc32": f"0x{target_candidate_crc:08x}",
+            "candidate_crc32": f"0x{target_candidate_crc:08x}",
             "payload": _writer_payload_record(target_writer),
           },
         )
@@ -397,7 +397,7 @@ def _run_patch_locked(
           "identity": _boot_identity_record(boot_identity),
           "target_readback_sha256": sha256_bytes(intermediate_target),
           "crc_readback_sha256": sha256_bytes(intermediate_crc),
-          "staged_crc_candidate_crc32": f"0x{crc_candidate_crc:08x}",
+          "crc_candidate_crc32": f"0x{crc_candidate_crc:08x}",
           "payload": _payload_record(patch_payloads["crc_intermediate"]),
         },
       )
@@ -407,7 +407,7 @@ def _run_patch_locked(
         candidate_crc32=crc_candidate_crc,
         live_target_instruction=target.patched_instruction,
         live_adjustment=candidate.old_adjustment,
-        staged_context=CANDIDATE_ADJUSTMENT,
+        candidate_context=CANDIDATE_ADJUSTMENT,
         candidate_adjustment=candidate.new_adjustment,
       )
       crc_writer = build_crc_candidate_payload_image(
@@ -421,7 +421,7 @@ def _run_patch_locked(
         sector_base=target.crc_sector_base,
         source=candidate.crc_source,
         candidate=candidate.crc_final,
-        staged_crc32=crc_candidate_crc,
+        candidate_crc32=crc_candidate_crc,
         envelope_sha256=crc_writer.payload.sha256,
       )
       with transport_factory() as transport:
@@ -440,7 +440,7 @@ def _run_patch_locked(
             "sector_base": f"0x{target.crc_sector_base:x}",
             "source_sha256": sha256_bytes(candidate.crc_source),
             "candidate_sha256": sha256_bytes(candidate.crc_final),
-            "staged_crc32": f"0x{crc_candidate_crc:08x}",
+            "candidate_crc32": f"0x{crc_candidate_crc:08x}",
             "payload": _writer_payload_record(crc_writer),
           },
         )
@@ -954,13 +954,13 @@ def _writer_prompt(
   sector_base: int,
   source: bytes,
   candidate: bytes,
-  staged_crc32: int,
+  candidate_crc32: int,
   envelope_sha256: str,
 ) -> str:
   return (
     f"WRITE-{label} {target.part_number.decode('ascii')} 0x{sector_base:x} "
     f"{sha256_bytes(source)}->{sha256_bytes(candidate)} "
-    f"0x{staged_crc32:08x} {envelope_sha256}"
+    f"0x{candidate_crc32:08x} {envelope_sha256}"
   )
 
 

@@ -10,7 +10,6 @@
 #define CANDIDATE_STAGE_COUNT 6u
 #define TARGET_INSTRUCTION_OFFSET 0x64E4u
 #define SOURCE_ADJUST_OFFSET 0x7DECu
-#define CRC_MAGIC_OFFSET 0x7E00u
 #define ORIGINAL_ADJUST_WORD 0x0962887Fu
 #define CANDIDATE_ADJUST_WORD 0x414F47CCu
 #define TARGET_CONTEXT_TAG 0x54524754u
@@ -28,10 +27,10 @@ struct candidate_writer_intent {
   uint32_t sram_length;
   uint32_t live_target_crc32;
   uint32_t live_crc_crc32;
-  uint32_t staged_candidate_crc32;
+  uint32_t candidate_crc32;
   uint8_t live_target_instruction[4];
   uint8_t live_adjustment[4];
-  uint8_t staged_context[4];
+  uint8_t candidate_context[4];
   uint32_t boot_magic0;
   uint32_t boot_magic1;
   uint8_t candidate_adjustment[4];
@@ -117,8 +116,7 @@ static int validate_candidate_intent(const struct runtime_guard *guard) {
     ||candidate_intent_word(44u)!=CANDIDATE_ADJUST_WORD)return 6;
   copy_sector_to_sram(WRITER_SECTOR_BASE,guard);
   MMIO32((uint32_t)SRAM_BUFFER+SOURCE_ADJUST_OFFSET)=CANDIDATE_ADJUST_WORD;
-  if(MMIO32((uint32_t)SRAM_BUFFER+SOURCE_ADJUST_OFFSET)!=CANDIDATE_ADJUST_WORD
-    ||MMIO32((uint32_t)SRAM_BUFFER+CRC_MAGIC_OFFSET)!=MAGIC_WORD)return 7;
+  if(MMIO32((uint32_t)SRAM_BUFFER+SOURCE_ADJUST_OFFSET)!=CANDIDATE_ADJUST_WORD)return 7;
 #endif
   if(crc_region32(SRAM_BUFFER,TARGET_LENGTH,guard)!=candidate_intent_word(32u))return 8;
   return 0;

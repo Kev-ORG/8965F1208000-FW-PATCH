@@ -17,7 +17,6 @@ from eps_patch.protocol import (
   OP_CRC_PROBE,
   OP_FACI_PE_CYCLE,
   OP_LIVE_READ,
-  OP_RAM_ECHO,
   OP_RESTORE_SECTOR,
   OP_VERIFY_CRC,
   OP_WRITE_CRC_CANDIDATE,
@@ -45,11 +44,6 @@ class _PatchTransport:
   def read_bootloader_identity(self):
     return BootloaderIdentity(self.identity.boot_software_id, self.identity.panda_serial)
 
-  def run_staged_payload(self, _image, *, ram_blob, operation, new_uds):
-    assert operation == self.result.operation
-    assert new_uds is False
-    return self.result
-
   def run_payload(self, _image, *, operation, new_uds):
     assert operation == self.result.operation
     assert new_uds is False
@@ -70,14 +64,8 @@ class _RestoreTransport:
   def read_bootloader_identity(self):
     return self.identity
 
-  def run_staged_payload(self, image, *, ram_blob, operation, new_uds):
-    assert image.name in {"ram_echo", "restore_sector"}
-    assert operation == self.result.operation
-    assert new_uds is False
-    return self.result
-
   def run_payload(self, image, *, operation, new_uds):
-    assert image.name == "live_read"
+    assert image.name in {"live_read", "restore_sector"}
     assert operation == self.result.operation
     assert new_uds is False
     return self.result
@@ -215,8 +203,8 @@ class OfflineBench:
       patched_dcra_raw=self.target.crc_residue,
       exit_ctl=0x10203040,
       exit_cout=0x50607080,
-      sram_echo_length=0 if final else self.target.sector_length,
-      sram_echo_crc32=0 if final else binascii.crc32(staged),
+      sram_echo_length=0,
+      sram_echo_crc32=0,
     )
 
   def _crc_result(self, operation, target_sector, crc_sector, observation):
@@ -356,15 +344,6 @@ class OfflineBench:
         _RestoreTransport(
           boot_identity,
           StreamResult(
-            operation=OP_RAM_ECHO,
-            sector=original,
-            magic_words=(self.target.magic_word, self.target.magic_word),
-            statuses=((1, 0),),
-          ),
-        ),
-        _RestoreTransport(
-          boot_identity,
-          StreamResult(
             operation=OP_LIVE_READ,
             sector=None,
             magic_words=(self.target.magic_word, self.target.magic_word),
@@ -383,21 +362,21 @@ class OfflineBench:
 
     def transport_factory():
       transport = transports.pop(0)
-      original_run = transport.run_staged_payload
+      original_run = transport.run_payload
 
-      def tracked_run(image, *, ram_blob, operation, new_uds):
+      def tracked_run(image, *, operation, new_uds):
         if operation == OP_RESTORE_SECTOR:
           self.restore_writes.append(transport.result.regions[0].base)
-        return original_run(image, ram_blob=ram_blob, operation=operation, new_uds=new_uds)
+        return original_run(image, operation=operation, new_uds=new_uds)
 
-      transport.run_staged_payload = tracked_run
+      transport.run_payload = tracked_run
       return transport
 
     result = None
     for _invocation in range(6):
       result = run_restore(
         layout=layout,
-        payloads={name: self._payload(name) for name in ("ram_echo", "live_read")},
+        payloads={"live_read": self._payload("live_read")},
         templates={
           "restore_sector": (
             Path(__file__).resolve().parents[1] / "payload" / "build" / "restore_sector.bin"
@@ -410,6 +389,8 @@ class OfflineBench:
         target=self.target,
         new_uds=False,
       )
+      if result.name == "restore-report.json":
+        break
     assert result is not None
     return result
 

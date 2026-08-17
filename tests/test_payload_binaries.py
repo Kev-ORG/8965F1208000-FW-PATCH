@@ -10,14 +10,14 @@ PAYLOAD = ROOT / "payload"
 BUILD = PAYLOAD / "build"
 REVIEWED_SOURCES = (
   "probe_pe_cycle.c", "crc_probe.c", "crc_intermediate.c", "crc_verify.c",
-  "write_target_candidate.c", "write_crc_candidate.c", "ram_echo.c",
+  "write_target_candidate.c", "write_crc_candidate.c",
   "restore_sector.c", "live_read.c", "common.h", "protocol.h",
   "dcra.h", "patch_common.h", "patch_protocol.h", "crc_runtime.h",
   "candidate_writer.h", "faci_dual.h", "linker.ld", "linker_intent.ld", "build.sh",
 )
 RUNTIME_PAYLOADS = {
   "probe_pe_cycle", "crc_probe", "crc_intermediate", "crc_verify",
-  "write_target_candidate", "write_crc_candidate", "ram_echo", "restore_sector",
+  "write_target_candidate", "write_crc_candidate", "restore_sector",
   "live_read",
 }
 
@@ -95,7 +95,7 @@ def test_live_read_build_and_zero_did_envelope_are_exactly_pinned():
   )
   assert hashlib.sha256(envelope).hexdigest() == expected_envelope_sha256
   assert LIVE_READ_ENVELOPE_SHA256 == expected_envelope_sha256
-  assert script.count("write_crc_candidate ram_echo restore_sector live_read") == 2
+  assert script.count("write_crc_candidate restore_sector live_read") == 2
   assert "! -name live_read.bin" in script
   assert "last_payload=live_read" in script
   assert '[ "$name" = "$last_payload" ] && comma=' in script

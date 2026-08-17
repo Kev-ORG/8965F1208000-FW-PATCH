@@ -27,24 +27,17 @@ from .payload import (
   build_specialized_payload_image,
 )
 from .power import PowerCycleCheckpoint, request_power_cycle
-from .protocol import (
-  OP_LIVE_READ, OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult,
-)
+from .protocol import OP_LIVE_READ, OP_RESTORE_SECTOR, RegionResult, StreamResult
 from .transport import BootloaderIdentity, EcuIdentity
 
 
-RAM_ECHO_ENVELOPE_SHA256 = (
-  "c938bfbd82e8f55c1597f0238c5d55213eea2196a04ed9594b298b37ac11b268"
-)
 LIVE_READ_ENVELOPE_SHA256: str | None = (
   "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
 )
 RESTORE_INTENT_MAGIC = 0x52535452
-RESTORE_INTENT_SCHEMA = 1
+RESTORE_INTENT_SCHEMA = 2
 RESTORE_INTENT_LENGTH = 0x80
-RESTORE_INTENT_CRC_OFFSET = 48
-RESTORE_SOURCE_ADJUST_OFFSET = 52
-RESTORE_STAGED_CRC_OFFSET = 56
+RESTORE_INTENT_CRC_OFFSET = 124
 _ATTEMPT_TIMESTAMP = re.compile(r"\A\d{8}T\d{6}Z\Z")
 _PATCH_STATE_KEYS_V1 = {
   "schema",
@@ -129,11 +122,9 @@ class RestoreError(RuntimeError):
 
 class RestoreState(str, Enum):
   STARTED = "STARTED"
-  CRC_ECHO_VERIFIED = "CRC_ECHO_VERIFIED"
   CRC_LIVE_PRECHECKED = "CRC_LIVE_PRECHECKED"
   CRC_ARMED = "CRC_ARMED"
   CRC_COMMITTED = "CRC_COMMITTED"
-  TARGET_ECHO_VERIFIED = "TARGET_ECHO_VERIFIED"
   TARGET_LIVE_PRECHECKED = "TARGET_LIVE_PRECHECKED"
   TARGET_ARMED = "TARGET_ARMED"
   TARGET_COMMITTED = "TARGET_COMMITTED"
@@ -301,7 +292,7 @@ def build_restore_intent(
   *,
   target: TargetManifest = TARGET,
 ) -> bytes:
-  """Bind one reviewed original backup to the fixed restore payload intent."""
+  """Bind one fixed reverse derivation to the reviewed restore template."""
   if type(backup) is not RestoreBackup:
     raise RestoreError("restore intent requires an exact RestoreBackup")
   if backup.base not in (target.sector_base, target.crc_sector_base):
@@ -312,32 +303,39 @@ def build_restore_intent(
     or sha256_bytes(backup.data) != backup.sha256
   ):
     raise RestoreError("restore intent backup hash or length changed")
-  context = (
-    target.original_instruction
-    if backup.base == target.sector_base
-    else target.magic_word.to_bytes(4, "little")
-  )
+  source = bytearray(backup.data)
+  if backup.base == target.sector_base:
+    source_context = target.patched_instruction
+    candidate_context = target.original_instruction
+    source[
+      target.instruction_offset:target.instruction_offset + 4
+    ] = source_context
+  else:
+    source_context = target.crc_patched_adjust_word.to_bytes(4, "little")
+    candidate_context = target.crc_original_adjust_word.to_bytes(4, "little")
+    source[
+      target.crc_adjust_offset:target.crc_adjust_offset + 4
+    ] = source_context
+    if source[0x7E00:0x7E04] != target.magic_word.to_bytes(4, "little"):
+      raise RestoreError("CRC restore source does not contain the fixed boot magic")
   block = bytearray(RESTORE_INTENT_LENGTH)
   struct.pack_into(
-    "<IHHI",
+    "<IHHIII4s4sII",
     block,
     0,
     RESTORE_INTENT_MAGIC,
     RESTORE_INTENT_SCHEMA,
     RESTORE_INTENT_LENGTH,
     backup.base,
-  )
-  block[12:44] = bytes.fromhex(backup.sha256)
-  block[44:48] = context
-  if backup.base == target.crc_sector_base:
-    block[
-      RESTORE_SOURCE_ADJUST_OFFSET:RESTORE_SOURCE_ADJUST_OFFSET + 4
-    ] = backup.source_adjustment
-  struct.pack_into(
-    "<I", block, RESTORE_STAGED_CRC_OFFSET, binascii.crc32(backup.data),
+    binascii.crc32(source),
+    binascii.crc32(backup.data),
+    source_context,
+    candidate_context,
+    target.magic_word,
+    target.magic_word,
   )
   crc_input = bytearray(block)
-  crc_input[RESTORE_INTENT_CRC_OFFSET:RESTORE_INTENT_CRC_OFFSET + 4] = bytes(4)
+  crc_input[RESTORE_INTENT_CRC_OFFSET:] = bytes(4)
   struct.pack_into(
     "<I", block, RESTORE_INTENT_CRC_OFFSET, binascii.crc32(crc_input),
   )
@@ -406,7 +404,6 @@ def _run_restore_locked(
   ).encode("utf-8"))
   if semantic_probe_digest != plan.probe_report_sha256:
     raise RestoreError("patch incident is not bound to the fixed probe evidence")
-  ram_echo = _validate_ram_echo_payload(payloads, target)
   live_read = _validate_live_read_payload(payloads, target)
   restore_template = _validate_restore_template(templates)
   backups = tuple(_backup_for_base(trusted, base, target) for base in plan.sector_bases)
@@ -454,41 +451,6 @@ def _run_restore_locked(
       preflight()
     if entry is RestoreState.STARTED or entry is RestoreState.CRC_COMMITTED:
       label_name = plan.restore_order[0] if entry is RestoreState.STARTED else "target"
-      backup = backup_by_label[label_name]
-      with transport_factory() as transport:
-        echo_identity = transport.read_bootloader_identity()
-        _require_boot_identity(echo_identity, trusted.identity)
-        echo_result = transport.run_payload(
-          ram_echo,
-          operation=OP_RAM_ECHO,
-          new_uds=new_uds,
-        )
-      _validate_ram_echo_result(echo_result, backup, target)
-      echo_state = (
-        RestoreState.CRC_ECHO_VERIFIED
-        if backup.label == "crc" else RestoreState.TARGET_ECHO_VERIFIED
-      )
-      checkpoint = PowerCycleCheckpoint(
-        echo_state.value,
-        (
-          RestoreState.CRC_LIVE_PRECHECKED.value
-          if backup.label == "crc" else RestoreState.TARGET_LIVE_PRECHECKED.value
-        ),
-      )
-      path = recorder.record(
-        echo_state,
-        evidence={
-          "identity": _boot_identity_record(echo_identity),
-          "sector_base": f"0x{backup.base:x}",
-          "backup_sha256": backup.sha256,
-          "ram_echo_payload": _payload_record(ram_echo),
-        },
-        power_cycle=checkpoint,
-      )
-      raise _PlannedPowerCycle(path, checkpoint)
-
-    if entry in (RestoreState.CRC_ECHO_VERIFIED, RestoreState.TARGET_ECHO_VERIFIED):
-      label_name = "crc" if entry is RestoreState.CRC_ECHO_VERIFIED else "target"
       backup = backup_by_label[label_name]
       live_precheck_state = (
         RestoreState.CRC_LIVE_PRECHECKED
@@ -572,7 +534,7 @@ def _run_restore_locked(
     more_sectors = len(recorder.completed) < len(backups)
     checkpoint = (
       PowerCycleCheckpoint(
-        committed_state.value, RestoreState.TARGET_ECHO_VERIFIED.value,
+        committed_state.value, RestoreState.TARGET_LIVE_PRECHECKED.value,
       )
       if more_sectors else None
     )
@@ -894,12 +856,10 @@ def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
   ):
     raise RestoreError("restore state fields are malformed or contradictory")
   expected_next: str | None = None
-  if result.endswith("_ECHO_VERIFIED"):
-    expected_next = result.removesuffix("_ECHO_VERIFIED") + "_LIVE_PRECHECKED"
-  elif result.endswith("_LIVE_PRECHECKED"):
+  if result.endswith("_LIVE_PRECHECKED"):
     expected_next = result.removesuffix("_LIVE_PRECHECKED") + "_ARMED"
   elif result == RestoreState.CRC_COMMITTED.value and tuple(order) == ("crc", "target"):
-    expected_next = RestoreState.TARGET_ECHO_VERIFIED.value
+    expected_next = RestoreState.TARGET_LIVE_PRECHECKED.value
   if schema == 2 and (power_cycle is None) != (expected_next is None):
     raise RestoreError("restore power-cycle checkpoint is missing or unexpected")
   if power_cycle is not None:
@@ -921,7 +881,7 @@ def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
   for label in order:
     upper = label.upper()
     happy_path.extend((
-      f"{upper}_ECHO_VERIFIED", f"{upper}_LIVE_PRECHECKED",
+      f"{upper}_LIVE_PRECHECKED",
       f"{upper}_ARMED", f"{upper}_COMMITTED",
     ))
   happy_path.append("PASS")
@@ -1040,27 +1000,6 @@ def _container_value(container, name: str, *, label: str):
     raise RestoreError(f"{label} is missing {name}") from exc
 
 
-def _validate_ram_echo_payload(payloads, target: TargetManifest):
-  payload = _container_value(payloads, "ram_echo", label="restore payload set")
-  try:
-    name = payload.name
-    envelope = payload.envelope
-    digest = payload.sha256
-  except AttributeError as exc:
-    raise RestoreError("ram_echo payload image is malformed") from exc
-  if name != "ram_echo":
-    raise RestoreError("ram_echo payload image has the wrong name")
-  if type(envelope) is not bytes or len(envelope) != target.envelope_length:
-    raise RestoreError("ram_echo payload envelope is not exact")
-  if (
-    type(digest) is not str
-    or hashlib.sha256(envelope).hexdigest() != digest
-    or digest != RAM_ECHO_ENVELOPE_SHA256
-  ):
-    raise RestoreError("ram_echo payload is not the exact reviewed envelope")
-  return payload
-
-
 def _validate_live_read_payload(payloads, target: TargetManifest):
   if LIVE_READ_ENVELOPE_SHA256 is None:
     raise RestoreError("reviewed live_read payload is not built and pinned")
@@ -1167,28 +1106,6 @@ def _require_boot_identity(current: object, expected: EcuIdentity) -> None:
     or not current.panda_serial
   ):
     raise RestoreError("fresh bootloader identity does not match fixed probe evidence")
-
-
-def _validate_ram_echo_result(
-  result: object,
-  backup: RestoreBackup,
-  target: TargetManifest,
-) -> None:
-  if (
-    type(result) is not StreamResult
-    or result.operation != OP_RAM_ECHO
-    or result.sector != backup.data
-    or sha256_bytes(result.sector) != backup.sha256
-    or result.magic_words != (target.magic_word, target.magic_word)
-    or result.statuses != ((1, 0),)
-    or result.faci_values
-    or result.regions
-    or result.crc_values
-    or result.crc is not None
-    or result.dcra_values
-    or result.dcra is not None
-  ):
-    raise RestoreError("RAM echo did not prove the complete exact original backup")
 
 
 def _validate_live_precheck(
@@ -1451,7 +1368,6 @@ def _fsync_directory(path: Path) -> None:
 
 __all__ = [
   "LIVE_READ_ENVELOPE_SHA256",
-  "RAM_ECHO_ENVELOPE_SHA256",
   "LiveReadClassification",
   "RestoreError",
   "RestorePlan",

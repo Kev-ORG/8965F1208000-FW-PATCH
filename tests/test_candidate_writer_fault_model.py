@@ -28,7 +28,7 @@ def test_every_writer_fault_boundary_is_one_shot_and_never_passes(operation):
   boundaries = all_candidate_writer_fault_boundaries()
   assert "program:0" in boundaries and "program:127" in boundaries
   assert {
-    "intent", "reserved", "fixed-base", "sram", "staged-crc",
+    "intent", "reserved", "fixed-base", "sram", "candidate-crc",
     "live-target-crc", "live-crc-sector-crc", "source-context",
     "candidate-context", "idle-entry",
   } <= set(boundaries)

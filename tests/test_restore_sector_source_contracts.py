@@ -10,7 +10,7 @@ def test_restore_sector_source_has_one_selected_fsaddr_and_no_feaddr():
   source = (ROOT / "payload" / "restore_sector.c").read_text()
   header = (ROOT / "payload" / "faci_dual.h").read_text()
   combined = source + header
-  assert "intent.sector_base" in source
+  assert "intent_word(8u)" in source
   assert "0xFFA10034" not in combined
   assert "FEADDR" not in combined
   assert source.count("erase_sector(") == 1
@@ -19,10 +19,11 @@ def test_restore_sector_source_has_one_selected_fsaddr_and_no_feaddr():
   assert "FACI_FSADDR = address" in header
 
 
-def test_restore_source_validates_staged_intent_and_idle_before_pe_entry():
+def test_restore_source_derives_local_candidate_and_checks_idle_before_pe_entry():
   source = (ROOT / "payload" / "restore_sector.c").read_text()
   assert source.index("validate_restore_intent") < source.index("enter_pe(")
-  assert source.index("staged_crc32(SRAM_BUFFER") < source.index("enter_pe(")
+  assert source.index("copy_sector_to_sram(base,guard)") < source.index("enter_pe(")
+  assert source.index("restore_crc32(SRAM_BUFFER,guard)") < source.index("enter_pe(")
   assert source.index("exact_idle") < source.index("enter_pe(")
   assert "TARGET_SECTOR_BASE" in source and "CRC_SECTOR_BASE" in source
   assert "SOURCE_ADJUST_OFFSET" in source and "CRC_MAGIC_OFFSET" in source
@@ -34,12 +35,11 @@ def test_c_and_host_restore_intent_layout_is_exactly_128_bytes():
   import struct
 
   source = (ROOT / "payload" / "restore_sector.c").read_text()
-  assert struct.calcsize("<IHHI32s4sI") == 52
-  assert "sizeof(struct restore_intent)==52u" in source
-  assert "uint8_t source_adjustment[4];" in source
-  assert "uint32_t staged_crc32;" in source
-  assert "uint8_t reserved[68];" in source
-  assert "sizeof(struct restore_storage)==INTENT_LENGTH" in source
+  assert struct.calcsize("<IHHIII4s4sII88sI") == 128
+  assert "sizeof(struct restore_intent)==INTENT_LENGTH" in source
+  assert "uint32_t source_crc32;" in source
+  assert "uint32_t candidate_crc32;" in source
+  assert "uint8_t reserved[88];" in source
 
 
 def test_restore_uses_retained_patch_runtime_and_bounded_nonretrying_faci_sequence():

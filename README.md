@@ -38,6 +38,8 @@ python3.12 eps_patch.py patch
 
 Patch 自动读取固定 probe 证据，不接受报告、备份或目录参数。它先写目标扇区 `0x60000`，再写启动 CRC 扇区 `0xf8000`。
 
+每次 payload 下载都严格是 `0xFEBF0000` 的 `0x1000`（4 KiB）加密 envelope。32 KiB 扇区绝不会由主机上传到 SRAM：写入前 writer 在 ECU 内从已验证的 Flash 扇区复制到 SRAM，只修改固定的指令字或 CRC 调整字，并在擦写前校验本地生成候选的 CRC。CRC 预检也直接读取 Flash 并验证软件 CRC 与 DCRA；它不再把“主机上传数据的 SRAM 回显”当作 Flash 真实性证明。
+
 每个计划性断电点，脚本会持久化完成阶段、打印提示并退出。完整断开车辆/EPS 电源、等待放电、恢复稳定供电并让 comma 重启；重新 SSH 后再次运行同一条 `python3.12 eps_patch.py patch`。脚本只继续该 attempt 的下一安全阶段。成功流程在 `PROBED`、`TARGET_COMMITTED`、`CRC_COMMITTED` 后需要完整断电；UDS reset 不能代替断电。
 
 writer 前会显示 `WRITE-TARGET` 或 `WRITE-CRC` 精确确认文本。核对地址、source、candidate、CRC 和 envelope 后逐字输入；任何差异都会在 writer arm 前停止。最终 PASS 表示独立回读精确匹配候选并通过 CRC/DCRA 验证。`TARGET_INDETERMINATE`、`CRC_INDETERMINATE`、`RECOVERY_REQUIRED` 时禁止再次 patch，改运行 restore。
@@ -90,6 +92,8 @@ python3.12 eps_patch.py patch
 ```
 
 Patch reads only the fixed probe evidence; it accepts no report, backup, or artifact-directory path. It always writes the target sector (`0x60000`) first, then the CRC sector (`0xf8000`).
+
+Every payload download is exactly one encrypted `0x1000` (4 KiB) envelope at `0xFEBF0000`. The 32 KiB sector is never uploaded from the host to SRAM: before erasing, the writer copies the verified live Flash sector into ECU SRAM, changes only the fixed instruction word or CRC adjustment word, and checks the locally derived candidate CRC. CRC precheck also reads Flash directly and verifies both software CRC and DCRA; a host-uploaded SRAM echo is not treated as proof of live Flash.
 
 At every planned complete power cycle, the script persistently records the completed stage, prints the instruction, and exits. Fully remove vehicle/EPS power, allow discharge, restore stable power, wait for comma to restart, reconnect over SSH, then rerun the same `python3.12 eps_patch.py patch` command. The command resumes only the recorded next safe stage. A UDS reset is not a complete power cycle. A successful patch has planned cycles after `PROBED`, `TARGET_COMMITTED`, and `CRC_COMMITTED`.
 

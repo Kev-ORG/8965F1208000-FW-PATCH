@@ -33,7 +33,7 @@ class CandidateWriterIntent:
   candidate_crc32: int
   live_target_instruction: bytes
   live_adjustment: bytes
-  staged_context: bytes
+  candidate_context: bytes
   candidate_adjustment: bytes
 
   @classmethod
@@ -72,7 +72,7 @@ class CandidateWriterIntent:
     contexts = (
       self.live_target_instruction,
       self.live_adjustment,
-      self.staged_context,
+      self.candidate_context,
       self.candidate_adjustment,
     )
     if any(type(value) is not bytes or len(value) != 4 for value in contexts):
@@ -84,7 +84,7 @@ class CandidateWriterIntent:
     )
     if (
       self.live_target_instruction != expected_contexts[0]
-      or self.staged_context != expected_contexts[1]
+      or self.candidate_context != expected_contexts[1]
       or self.live_adjustment != ORIGINAL_ADJUSTMENT
       or self.candidate_adjustment != CANDIDATE_ADJUSTMENT
     ):
@@ -99,7 +99,7 @@ class CandidateWriterIntent:
     )
     block[36:40] = self.live_target_instruction
     block[40:44] = self.live_adjustment
-    block[44:48] = self.staged_context
+    block[44:48] = self.candidate_context
     struct.pack_into("<II", block, 48, TARGET.magic_word, TARGET.magic_word)
     block[56:60] = self.candidate_adjustment
     struct.pack_into("<I", block, 60, context_tag)
@@ -206,7 +206,7 @@ class CandidateWriterModelResult:
 
 def all_candidate_writer_fault_boundaries() -> tuple[str, ...]:
   return (
-    "intent", "reserved", "fixed-base", "sram", "staged-crc",
+    "intent", "reserved", "fixed-base", "sram", "candidate-crc",
     "live-target-crc", "live-crc-sector-crc", "source-context",
     "candidate-context", "idle-entry", "entry", "erase",
     *(f"program:{page}" for page in range(128)),

@@ -29,6 +29,9 @@ def test_readme_documents_the_complete_comma_local_lifecycle():
     "CRC sector (`0xf8000`) first, then the target sector (`0x60000`)",
     "external programmer",
     "professional recovery",
+    "0xFEBF0000",
+    "0x1000",
+    "32 KiB sector is never uploaded",
   ):
     assert required in normalized
   for required in (

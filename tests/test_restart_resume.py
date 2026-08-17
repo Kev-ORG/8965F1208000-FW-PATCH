@@ -12,7 +12,6 @@ from eps_patch.protocol import (
   OP_CRC_INTERMEDIATE,
   OP_CRC_PROBE,
   OP_LIVE_READ,
-  OP_RAM_ECHO,
   OP_RESTORE_SECTOR,
   OP_VERIFY_CRC,
   OP_WRITE_CRC_CANDIDATE,
@@ -239,7 +238,7 @@ def test_patch_writer_commit_stays_resumable_when_instruction_output_fails(tmp_p
   assert checkpoint["next_state"] == "CRC_PRECHECKED"
   target_writes = [
     event for event in events
-    if len(event) > 2 and event[1] == "staged"
+    if len(event) > 2 and event[1] == "payload"
       and event[2] == OP_WRITE_TARGET_CANDIDATE
   ]
   assert len(target_writes) == 1
@@ -326,7 +325,7 @@ def test_pass_restore_supersedes_paused_patch_by_timestamp_after_hash_change(tmp
 
 
 def test_restore_resumes_one_hardware_stage_per_manual_rerun(tmp_path, monkeypatch):
-  """A restore rerun must not repeat echo/live-read or cross a planned cycle."""
+  """A restore rerun must not repeat live-read or cross a planned cycle."""
   import eps_patch.restore as restore_module
 
   monkeypatch.setattr(
@@ -348,10 +347,6 @@ def test_restore_resumes_one_hardware_stage_per_manual_rerun(tmp_path, monkeypat
   events = []
   prompts = []
   transports = [
-    restore_fx.FakeRestoreTransport(
-      "target-echo", events, boot_identity, OP_RAM_ECHO,
-      restore_fx._ram_echo_result(target_source),
-    ),
     restore_fx.FakeRestoreTransport(
       "target-live", events, boot_identity, OP_LIVE_READ,
       restore_fx._live_read_result(target_candidate, crc_source),
@@ -377,12 +372,6 @@ def test_restore_resumes_one_hardware_stage_per_manual_rerun(tmp_path, monkeypat
 
   state_path = invoke()
   state, checkpoint = _checkpoint(state_path)
-  assert state["result"] == "TARGET_ECHO_VERIFIED"
-  assert checkpoint["next_state"] == "TARGET_LIVE_PRECHECKED"
-  assert len(transports) == 2
-
-  assert invoke() == state_path
-  state, checkpoint = _checkpoint(state_path)
   assert state["result"] == "TARGET_LIVE_PRECHECKED"
   assert checkpoint["next_state"] == "TARGET_ARMED"
   assert len(transports) == 1
@@ -394,7 +383,7 @@ def test_restore_resumes_one_hardware_stage_per_manual_rerun(tmp_path, monkeypat
   assert len(tuple(layout.restore_root.iterdir())) == 1
 
 
-def test_restore_persists_echo_before_instruction_output_failure(tmp_path, monkeypatch):
+def test_restore_persists_live_read_before_instruction_output_failure(tmp_path, monkeypatch):
   """A lost prompt must leave the completed read-only stage restart-resumable."""
   import eps_patch.restore as restore_module
 
@@ -403,7 +392,9 @@ def test_restore_persists_echo_before_instruction_output_failure(tmp_path, monke
     "LIVE_READ_ENVELOPE_SHA256",
     restore_fx.TEST_LIVE_READ_ENVELOPE_SHA256,
   )
-  layout, target, identity, target_source, *_case = restore_fx._probe_case(tmp_path)
+  (
+    layout, target, identity, _target_source, crc_source, target_candidate, _crc_candidate,
+  ) = restore_fx._probe_case(tmp_path)
   restore_fx._patch_state(
     layout,
     result="TARGET_INDETERMINATE",
@@ -413,8 +404,8 @@ def test_restore_persists_echo_before_instruction_output_failure(tmp_path, monke
     identity.boot_software_id, identity.panda_serial,
   )
   transport = restore_fx.FakeRestoreTransport(
-    "target-echo", [], boot_identity, OP_RAM_ECHO,
-    restore_fx._ram_echo_result(target_source),
+    "target-live", [], boot_identity, OP_LIVE_READ,
+    restore_fx._live_read_result(target_candidate, crc_source),
   )
 
   with pytest.raises(RuntimeError, match="stdout unavailable"):
@@ -424,7 +415,7 @@ def test_restore_persists_echo_before_instruction_output_failure(tmp_path, monke
       templates=restore_fx._restore_templates(),
       preflight=lambda: None,
       transport_factory=lambda: transport,
-      confirmation=lambda _prompt: pytest.fail("echo stage must not confirm"),
+      confirmation=lambda _prompt: pytest.fail("live-read stage must not confirm"),
       power_cycle_checkpoint=lambda _prompt: (_ for _ in ()).throw(
         RuntimeError("stdout unavailable")
       ),
@@ -435,8 +426,8 @@ def test_restore_persists_echo_before_instruction_output_failure(tmp_path, monke
   attempts = tuple(layout.restore_root.iterdir())
   assert len(attempts) == 1
   state, checkpoint = _checkpoint(attempts[0] / "state.json")
-  assert state["result"] == "TARGET_ECHO_VERIFIED"
-  assert checkpoint["next_state"] == "TARGET_LIVE_PRECHECKED"
+  assert state["result"] == "TARGET_LIVE_PRECHECKED"
+  assert checkpoint["next_state"] == "TARGET_ARMED"
 
 
 def test_probe_has_no_restart_resume_dependency():

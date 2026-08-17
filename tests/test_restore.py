@@ -562,15 +562,6 @@ def test_restore_rejects_malformed_or_contradictory_patch_state(tmp_path, mutati
     select_restore_plan(layout)
 
 
-def _ram_echo_result(data: bytes) -> StreamResult:
-  return StreamResult(
-    operation=OP_RAM_ECHO,
-    sector=data,
-    magic_words=(patch_fx.TARGET.magic_word, patch_fx.TARGET.magic_word),
-    statuses=((1, 0),),
-  )
-
-
 def _restore_result(base: int, data: bytes) -> StreamResult:
   return StreamResult(
     operation=OP_RESTORE_SECTOR,
@@ -611,24 +602,7 @@ class FakeRestoreTransport:
 
 
 def _restore_payloads():
-  from eps_patch.payload import build_envelope, load_built_shellcode
-  from eps_patch.restore import RAM_ECHO_ENVELOPE_SHA256
-
-  build = Path(__file__).resolve().parents[1] / "payload" / "build"
-  shellcode = load_built_shellcode(build, "ram_echo")
-  envelope = build_envelope(
-    shellcode,
-    did_201=bytes(16),
-    did_202=bytes(16),
-    iv=bytes(16),
-  )
-  assert hashlib.sha256(envelope).hexdigest() == RAM_ECHO_ENVELOPE_SHA256
   return {
-    "ram_echo": SimpleNamespace(
-      name="ram_echo",
-      envelope=envelope,
-      sha256=RAM_ECHO_ENVELOPE_SHA256,
-    ),
     "live_read": SimpleNamespace(
       name="live_read",
       envelope=TEST_LIVE_READ_ENVELOPE,
@@ -693,16 +667,9 @@ def _run_restore(
       live_target, live_crc = live_overrides[name]
     transports.extend((
       FakeRestoreTransport(
-        f"{name}-echo",
-        events,
-        wrong if wrong_identity and not transports else boot_identity,
-        OP_RAM_ECHO,
-        _ram_echo_result(data),
-      ),
-      FakeRestoreTransport(
         f"{name}-live",
         events,
-        boot_identity,
+        wrong if wrong_identity and not transports else boot_identity,
         OP_LIVE_READ,
         _live_read_result(live_target, live_crc),
         failure=TimeoutError("live read response lost")
@@ -725,7 +692,7 @@ def _run_restore(
   confirmations = []
   power_prompts = []
   report = None
-  for _invocation in range(len(order) * 3):
+  for _invocation in range(len(order) * 2):
     try:
       report = run_restore(
         layout=layout,
@@ -782,19 +749,17 @@ def test_restore_crc_first_then_target_with_fresh_identity_and_exact_confirmatio
   assert state["incident_state_sha256"] == sha256_bytes(incident_path.read_bytes())
   payloads = [event for event in events if len(event) > 2 and event[1] == "payload"]
   assert [event[2] for event in payloads] == [
-    OP_RAM_ECHO, OP_LIVE_READ, OP_RESTORE_SECTOR,
-    OP_RAM_ECHO, OP_LIVE_READ, OP_RESTORE_SECTOR,
+    OP_LIVE_READ, OP_RESTORE_SECTOR, OP_LIVE_READ, OP_RESTORE_SECTOR,
   ]
   assert [event[3] for event in payloads] == [
-    "ram_echo", "live_read", "restore_sector",
-    "ram_echo", "live_read", "restore_sector",
+    "live_read", "restore_sector", "live_read", "restore_sector",
   ]
   assert len(confirmations) == 2
   assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")
   assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x60000 ")
   incident_digest = sha256_bytes(incident_path.read_bytes())
   assert all(incident_digest in prompt for prompt in confirmations)
-  assert any("CRC_COMMITTED -> TARGET_ECHO_VERIFIED" in prompt for prompt in power_prompts)
+  assert any("CRC_COMMITTED -> TARGET_LIVE_PRECHECKED" in prompt for prompt in power_prompts)
   assert (state_path.parent / "returned-sector-0xf8000.bin").exists()
   assert (state_path.parent / "returned-sector-0x60000.bin").exists()
 
@@ -851,12 +816,8 @@ def test_restore_live_reads_both_sectors_before_each_writer_arm(tmp_path):
   assert crc_evidence["live_sectors"]["crc"]["state"] == "candidate"
   assert target_evidence["live_sectors"]["target"]["state"] == "candidate"
   assert target_evidence["live_sectors"]["crc"]["state"] == "source"
-  assert any("CRC_ECHO_VERIFIED -> CRC_LIVE_PRECHECKED" in item for item in power_prompts)
   assert any("CRC_LIVE_PRECHECKED -> CRC_ARMED" in item for item in power_prompts)
-  assert any(
-    "TARGET_ECHO_VERIFIED -> TARGET_LIVE_PRECHECKED" in item
-    for item in power_prompts
-  )
+  assert any("CRC_COMMITTED -> TARGET_LIVE_PRECHECKED" in item for item in power_prompts)
   assert any("TARGET_LIVE_PRECHECKED -> TARGET_ARMED" in item for item in power_prompts)
 
 
@@ -1004,7 +965,7 @@ def _write_prior_restore_state(layout, plan, *, result: str) -> Path:
     states = ("STARTED", "FAILED")
   elif result == "INDETERMINATE":
     states = (
-      "STARTED", "TARGET_ECHO_VERIFIED", "TARGET_LIVE_PRECHECKED",
+      "STARTED", "TARGET_LIVE_PRECHECKED",
       "TARGET_ARMED", "INDETERMINATE",
     )
   elif result == "PASS":
@@ -1012,7 +973,7 @@ def _write_prior_restore_state(layout, plan, *, result: str) -> Path:
     for label in plan.restore_order:
       upper = label.upper()
       states.extend((
-        f"{upper}_ECHO_VERIFIED", f"{upper}_LIVE_PRECHECKED",
+        f"{upper}_LIVE_PRECHECKED",
         f"{upper}_ARMED", f"{upper}_COMMITTED",
       ))
     states.append("PASS")
@@ -1249,7 +1210,7 @@ def test_post_arm_restore_uncertainty_is_terminal_indeterminate_without_retry(
   assert len(restore_calls) == 1
 
 
-def test_restore_intent_binds_selected_backup_hash_context_and_crc(tmp_path):
+def test_restore_intent_binds_fixed_reverse_source_and_candidate_crc(tmp_path):
   from eps_patch.evidence import load_probe_pass
   from eps_patch.restore import _backup_for_base, build_restore_intent
 
@@ -1259,14 +1220,21 @@ def test_restore_intent_binds_selected_backup_hash_context_and_crc(tmp_path):
     backup = _backup_for_base(trusted, base, target)
     intent = build_restore_intent(backup, target=target)
     assert len(intent) == 0x80
-    assert intent[12:44] == bytes.fromhex(backup.sha256)
-    assert int.from_bytes(intent[56:60], "little") == binascii.crc32(backup.data)
+    assert int.from_bytes(intent[16:20], "little") == binascii.crc32(backup.data)
     check = bytearray(intent)
-    supplied = check[48:52]
-    check[48:52] = bytes(4)
+    supplied = check[124:128]
+    check[124:128] = bytes(4)
     assert supplied == binascii.crc32(check).to_bytes(4, "little")
-    expected_context = (
-      target.magic_word.to_bytes(4, "little")
-      if base == target.crc_sector_base else target.original_instruction
-    )
-    assert intent[44:48] == expected_context
+    if base == target.crc_sector_base:
+      source = bytearray(backup.data)
+      source[target.crc_adjust_offset:target.crc_adjust_offset + 4] = (
+        target.crc_patched_adjust_word.to_bytes(4, "little")
+      )
+      assert intent[20:24] == target.crc_patched_adjust_word.to_bytes(4, "little")
+      assert intent[24:28] == target.crc_original_adjust_word.to_bytes(4, "little")
+    else:
+      source = bytearray(backup.data)
+      source[target.instruction_offset:target.instruction_offset + 4] = target.patched_instruction
+      assert intent[20:24] == target.patched_instruction
+      assert intent[24:28] == target.original_instruction
+    assert int.from_bytes(intent[12:16], "little") == binascii.crc32(source)
