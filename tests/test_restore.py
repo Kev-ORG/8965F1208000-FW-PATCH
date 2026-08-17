@@ -188,6 +188,25 @@ def test_patch_state_audit_accepts_exact_pending_and_consumed_legacy_history(
   assert _legacy_crc_trigger_recovery_status(consumed["transitions"]) == "consumed"
 
 
+@pytest.mark.parametrize("classification", ("source", "candidate"))
+def test_patch_state_audit_accepts_completed_legacy_recovery_history(
+  tmp_path, classification,
+):
+  from eps_patch.restore import (
+    _legacy_crc_trigger_recovery_status, _load_patch_state,
+  )
+
+  _layout, state_path, report_path, _events, _confirmations = (
+    patch_fx._complete_legacy_crc_recovery(tmp_path, classification)
+  )
+
+  completed, raw = _load_patch_state(state_path, state_path.parent.name)
+  assert report_path.name == "patch-report.json"
+  assert raw == state_path.read_bytes()
+  assert completed["result"] == "PASS"
+  assert _legacy_crc_trigger_recovery_status(completed["transitions"]) == "consumed"
+
+
 @pytest.mark.parametrize(
   "mutation",
   (

@@ -645,6 +645,63 @@ def _invoke_patch_resume(
   )
 
 
+def _complete_legacy_crc_recovery(tmp_path, classification):
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, crc_candidate,
+  ) = _legacy_crc_trigger_case(tmp_path)
+  events = []
+  confirmations = []
+  powers = []
+  crc_live = {"source": crc_source, "candidate": crc_candidate}[classification]
+  _invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=FakeTransport(
+      "legacy-reconcile", events, identity,
+      _live_read_result(target_candidate, crc_live), boot=True,
+    ),
+    events=events,
+    confirmations=confirmations,
+    powers=powers,
+  )
+  if classification == "source":
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=FakeTransport(
+        "corrected-route-writer", events, identity,
+        _writer_result(
+          OP_WRITE_CRC_CANDIDATE, target.crc_sector_base, crc_candidate,
+        ),
+        boot=True,
+      ),
+      events=events,
+      confirmations=confirmations,
+      powers=powers,
+    )
+  final = _crc_result(
+    OP_VERIFY_CRC,
+    target_candidate,
+    crc_candidate,
+    _observation(
+      old_adjustment=NEW_ADJUSTMENT,
+      target_candidate=target_candidate,
+      crc_candidate=crc_candidate,
+      final=True,
+    ),
+  )
+  report_path = _invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=FakeTransport("legacy-verify", events, identity, final),
+    events=events,
+    confirmations=confirmations,
+    powers=powers,
+  )
+  return layout, state_path, report_path, events, confirmations
+
+
 def test_patch_reconciles_crc_source_read_only_before_one_manual_retry(tmp_path):
   (
     layout, state_path, target, identity, _target_source, crc_source,
@@ -808,6 +865,31 @@ def test_exact_legacy_nrc_history_gets_one_read_only_reconciliation(
   assert f"{expected_checkpoint['completed_state']} -> " in powers[0]
 
 
+@pytest.mark.parametrize("classification", ("source", "candidate"))
+def test_exact_legacy_recovery_remains_auditable_through_final_pass(
+  tmp_path, classification,
+):
+  from eps_patch.restore import _legacy_crc_trigger_recovery_status
+
+  _layout, state_path, report_path, events, confirmations = (
+    _complete_legacy_crc_recovery(tmp_path, classification)
+  )
+
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert report_path.name == "patch-report.json"
+  assert state["result"] == "PASS"
+  assert _legacy_crc_trigger_recovery_status(state["transitions"]) == "consumed"
+  operations = [
+    event[2] for event in events if len(event) > 2 and event[1] == "payload"
+  ]
+  assert operations == (
+    [OP_LIVE_READ, OP_WRITE_CRC_CANDIDATE, OP_VERIFY_CRC]
+    if classification == "source"
+    else [OP_LIVE_READ, OP_VERIFY_CRC]
+  )
+  assert len(confirmations) == (1 if classification == "source" else 0)
+
+
 @pytest.mark.parametrize(
   "mutation",
   (
@@ -927,6 +1009,9 @@ def test_legacy_recovery_live_read_failure_never_mutates_state(tmp_path, failure
 
 def test_consumed_legacy_exception_cannot_authorize_another_recovery(tmp_path):
   from eps_patch.patch import PatchError
+  from eps_patch.restore import (
+    RestoreError, _legacy_crc_trigger_recovery_status, _load_patch_state,
+  )
 
   (
     layout, state_path, target, identity, _target_source, crc_source,
@@ -957,6 +1042,12 @@ def test_consumed_legacy_exception_cannot_authorize_another_recovery(tmp_path):
       powers=[],
     )
   state_after_writer = state_path.read_bytes()
+  third_indeterminate = json.loads(state_after_writer.decode("utf-8"))
+  assert _legacy_crc_trigger_recovery_status(
+    third_indeterminate["transitions"],
+  ) is None
+  with pytest.raises(RestoreError, match="one-time CRC retry limit"):
+    _load_patch_state(state_path, state_path.parent.name)
   blocked = []
 
   with pytest.raises(PatchError):

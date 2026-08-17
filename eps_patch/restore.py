@@ -196,9 +196,10 @@ def _legacy_crc_trigger_recovery_status(
     return None
   if second_index == len(transitions) - 1:
     return "pending"
-  if second_index != len(transitions) - 2:
+  successor_index = second_index + 1
+  if successor_index >= len(transitions):
     return None
-  successor = transitions[-1]
+  successor = transitions[successor_index]
   if type(successor) is not dict:
     return None
   evidence = successor.get("evidence")
