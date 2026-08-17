@@ -27,7 +27,6 @@ _PAYLOAD_NAMES = (
   "crc_probe",
   "crc_intermediate",
   "crc_verify",
-  "ram_echo",
   "live_read",
 )
 _TEMPLATE_NAMES = (

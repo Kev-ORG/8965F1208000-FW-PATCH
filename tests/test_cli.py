@@ -40,6 +40,27 @@ def test_cli_exposes_exactly_three_commands(cli_module):
   assert set(_command_action(parser).choices) == {"probe", "patch", "restore"}
 
 
+def test_cli_loads_only_retained_runtime_payloads(cli_module, monkeypatch):
+  """A removed payload must not block a workflow before any ECU connection."""
+  loaded: list[str] = []
+
+  def load_shellcode(_directory, name):
+    loaded.append(name)
+    if name == "ram_echo":
+      raise AssertionError("obsolete payload was requested")
+    return b"shellcode"
+
+  monkeypatch.setattr(cli_module, "load_built_shellcode", load_shellcode)
+  monkeypatch.setattr(cli_module, "build_envelope", lambda *_args, **_kwargs: bytes(0x1000))
+
+  payloads = cli_module._load_payloads()
+
+  assert loaded == [
+    "probe_pe_cycle", "crc_probe", "crc_intermediate", "crc_verify", "live_read",
+  ]
+  assert set(vars(payloads)) == set(loaded)
+
+
 @pytest.mark.parametrize("command", ("probe", "patch", "restore"))
 def test_each_command_accepts_only_optional_serial(cli_module, command):
   """A caller must not be able to select or import evidence through the CLI."""
