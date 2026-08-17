@@ -33,6 +33,9 @@ class PostTriggerTransportError(TransportError):
     super().__init__(f"post-trigger destructive outcome is indeterminate: {primary}")
 
 
+_CRC_UDS_TRIGGER_BASE = 0xE0000
+
+
 @dataclass(frozen=True, slots=True)
 class EcuIdentity:
   part_number: bytes
@@ -284,9 +287,13 @@ class EcuTransport:
         raise TransportError("candidate-writer trigger base is not its fixed direction")
     elif sector_base is not None:
       raise TransportError("payload trigger sector base is not allowed")
-    selected_base = TARGET.sector_base if sector_base is None else sector_base
+    is_crc_direction = (
+      operation == OP_WRITE_CRC_CANDIDATE
+      or (operation == OP_RESTORE_SECTOR and sector_base == TARGET.crc_sector_base)
+    )
+    trigger_base = _CRC_UDS_TRIGGER_BASE if is_crc_direction else TARGET.sector_base
     routine_magic = b"\x45\x01" if new_uds else b"\x45\x00"
-    option = routine_magic + struct.pack("!II", selected_base, TARGET.sector_length)
+    option = routine_magic + struct.pack("!II", trigger_base, TARGET.sector_length)
     bindings.isotp_send(
       panda,
       b"\x31\x01\xff\x00" + option,

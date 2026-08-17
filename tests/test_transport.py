@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from eps_patch.protocol import (
+  OP_RESTORE_SECTOR, OP_WRITE_CRC_CANDIDATE, OP_WRITE_TARGET_CANDIDATE,
+)
+
 
 class FakePanda:
   instances = []
@@ -243,13 +247,67 @@ def test_transport_honors_negotiated_request_download_block_length():
 def _download_records(uds):
   records = []
   current = None
-@pytest.mark.parametrize("operation,base", ((13, 0xF8000), (14, 0x60000)))
+@pytest.mark.parametrize(
+  "operation,base",
+  ((OP_WRITE_TARGET_CANDIDATE, 0xF8000), (OP_WRITE_CRC_CANDIDATE, 0x60000)),
+)
 def test_candidate_writer_trigger_rejects_cross_direction_base(operation, base):
   from eps_patch.transport import EcuTransport, TransportError
 
   with EcuTransport(bindings=fake_bindings([])) as transport:
     with pytest.raises(TransportError, match="fixed direction"):
       transport.trigger(operation=operation, new_uds=False, sector_base=base)
+
+
+@pytest.mark.parametrize(
+  ("operation", "actual_base", "trigger_base"),
+  (
+    (OP_WRITE_TARGET_CANDIDATE, 0x60000, 0x60000),
+    (OP_WRITE_CRC_CANDIDATE, 0xF8000, 0xE0000),
+  ),
+)
+def test_candidate_writer_trigger_separates_actual_sector_from_uds_route(
+  operation, actual_base, trigger_base,
+):
+  from eps_patch.transport import EcuTransport
+
+  calls = []
+  with EcuTransport(bindings=fake_bindings(calls)) as transport:
+    transport.trigger(
+      operation=operation, new_uds=False, sector_base=actual_base,
+    )
+  assert calls[0][0][1] == (
+    b"\x31\x01\xff\x00\x45\x00"
+    + struct.pack("!II", trigger_base, 0x8000)
+  )
+
+
+@pytest.mark.parametrize(
+  ("actual_base", "trigger_base"),
+  ((0x60000, 0x60000), (0xF8000, 0xE0000)),
+)
+def test_restore_trigger_separates_actual_sector_from_uds_route(actual_base, trigger_base):
+  from eps_patch.transport import EcuTransport
+
+  calls = []
+  with EcuTransport(bindings=fake_bindings(calls)) as transport:
+    transport.trigger(
+      operation=OP_RESTORE_SECTOR, new_uds=False, sector_base=actual_base,
+    )
+  assert calls[0][0][1] == (
+    b"\x31\x01\xff\x00\x45\x00"
+    + struct.pack("!II", trigger_base, 0x8000)
+  )
+
+
+def test_restore_trigger_rejects_uds_route_as_actual_sector():
+  from eps_patch.transport import EcuTransport, TransportError
+
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    with pytest.raises(TransportError, match="not allowed"):
+      transport.trigger(
+        operation=OP_RESTORE_SECTOR, new_uds=False, sector_base=0xE0000,
+      )
 
 
 def test_live_read_trigger_uses_fixed_default_base_and_rejects_override():
