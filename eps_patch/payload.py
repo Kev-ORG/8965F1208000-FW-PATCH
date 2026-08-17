@@ -25,32 +25,32 @@ AUTHENTICATOR_OFFSET = 0xFF0
 SHELLCODE_LIMIT = JUMP_ADDRESS_OFFSET
 PLAINTEXT_BODY_LENGTH = AUTHENTICATOR_OFFSET
 PROBE_PE_CYCLE_ENVELOPE_SHA256 = (
-  "a8b4bddce38bfbea34df4088b8827c8c5bd46bad4ab9fe4f764bba157a5338cc"
+  "73e31e97921d4ca1c65c79fb09650744eb81b3a9e6db8493e02efb7629f62a52"
 )
 BUILT_PAYLOADS = {
   "probe_pe_cycle": {
-    "size": 2864,
-    "sha256": "d3a3cf534930b1b5e58642b3e1bd2aa10f3c9352da9852bd04cc21cdeee6b4a1",
+    "size": 2936,
+    "sha256": "7f4c8cc9f4612d53925c4d239fea1dc4b1987676a83f22222b5e45642559f132",
   },
   "crc_probe": {
-    "size": 2230,
-    "sha256": "659c845dcf7c63135d29f556fd41367b5516ca6bf9e2fa06c408bd7cdf905c16",
+    "size": 2306,
+    "sha256": "cc3be21841f55452b125706a691cd7e5b4b1194b660703d08108c297c8bfe1aa",
   },
   "crc_verify": {
-    "size": 1852,
-    "sha256": "ea1f7d9f2b08d0d5534a0f8e90e6797455522a2578e0227dc789663d7f794eb7",
+    "size": 1890,
+    "sha256": "4662f7160592d26e2fac16415cfd90224c1b7c64741254638ce27cbacb979cc0",
   },
   "crc_intermediate": {
-    "size": 2482,
-    "sha256": "c67fd90df1de30a0b90d5fc4bae6366a940989dc94dedcee4080fc384c40ebd7",
+    "size": 2504,
+    "sha256": "f4d7a2f62ceb37d3b74b33ced1179c8fb134ba1e5336cdb859c08ea5d6f4e5a7",
   },
   "write_target_candidate": {
     "size": 3934,
-    "sha256": "d0c600ff4ff266e491ac3a0baf4e77075c1863dc2290ae681a09a5bc1251af26",
+    "sha256": "2c2e189834740ecd5869bdc6494dea7d321cef345df271720dc95a547e8f72d5",
   },
   "write_crc_candidate": {
     "size": 3946,
-    "sha256": "3698aca109af9e700b36a8c7fc4c7bacc7ca22acb9a2fa40864f1abd03cd685a",
+    "sha256": "f5c5459ed4bb350972ab5e545d591a3668402db9aeb42b46ec3e11548547ced1",
   },
   "ram_echo": {
     "size": 1132,
@@ -151,14 +151,14 @@ REVIEWED_TEMPLATE_MANIFESTS = MappingProxyType({
   "write_target_candidate": PayloadTemplateManifest(
     name="write_target_candidate",
     size=3934,
-    sha256="d0c600ff4ff266e491ac3a0baf4e77075c1863dc2290ae681a09a5bc1251af26",
+    sha256="2c2e189834740ecd5869bdc6494dea7d321cef345df271720dc95a547e8f72d5",
     intent=IntentLayout(offset=0x600, size=0x80),
     review_sha256="a25e132815c18b0a793937d7c6f5d0e03ebb64697ea1a4fde00c03665fd414b8",
   ),
   "write_crc_candidate": PayloadTemplateManifest(
     name="write_crc_candidate",
     size=3946,
-    sha256="3698aca109af9e700b36a8c7fc4c7bacc7ca22acb9a2fa40864f1abd03cd685a",
+    sha256="f5c5459ed4bb350972ab5e545d591a3668402db9aeb42b46ec3e11548547ced1",
     intent=IntentLayout(offset=0x600, size=0x80),
     review_sha256="7169b4fd823bd873bd968a130ee98df5d669c5c0d8689eb64f854258abb92f89",
   ),

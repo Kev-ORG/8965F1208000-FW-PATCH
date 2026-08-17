@@ -75,6 +75,8 @@ def test_comprehensive_probe_moves_semantic_hash_and_software_crc_to_host():
 
 def test_comprehensive_probe_streams_two_full_regions_crc_dcra_magic_and_40_diagnostics():
   source = source_text()
+  assert "uint32_t values[PROTO_DCRA_RECORD_COUNT];" in source
+  assert "uint32_t values[PROTO_DCRA_RECORD_COUNT] =" not in source
   assert "PROTO_OP_FACI_PE_CYCLE" in source
   assert "stream_probe_region(PROTO_OP_FACI_PE_CYCLE, 0u, TARGET_BASE" in source
   assert "stream_probe_region(PROTO_OP_FACI_PE_CYCLE, 1u, CRC_SECTOR_BASE" in source
@@ -89,6 +91,8 @@ def test_comprehensive_probe_streams_two_full_regions_crc_dcra_magic_and_40_diag
   assert "DCRA_COUT = cout ^ 0xFFFFFFFFu" in restore
   assert "return 1u;" in restore and "return 0u;" in restore
   assert "if (restore_dcra(values[PROTO_DCRA_ENTRY_CTL], values[PROTO_DCRA_ENTRY_COUT]) != 0u)" in source
+  assert "values[PROTO_DCRA_ORIGINAL_RAW] = 0u;" in source
+  assert "values[PROTO_DCRA_PATCHED_RAW] = 0u;" in source
   assert "slot < 40u" in source
   assert "send_diagnostic(slot, widths[slot & 7u], snapshots[slot]" in source
   assert source.count("send_status_code(1u, outcome") == 1
