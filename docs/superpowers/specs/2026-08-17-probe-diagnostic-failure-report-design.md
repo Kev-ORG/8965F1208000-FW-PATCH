@@ -3,8 +3,11 @@
 ## Purpose
 
 When the comprehensive, read-only probe receives a complete ECU result whose
-outcome is not PASS, retain the returned DCRA state needed to diagnose the
-failure without creating trusted probe evidence or changing any ECU behavior.
+outcome is not PASS, retain one complete non-sector diagnostic summary needed
+to diagnose the failure without creating trusted probe evidence or changing
+any ECU behavior. The operator must be able to make this diagnosis from one
+read-only probe execution rather than returning to the vehicle for separate
+register, CRC, or FACI captures.
 
 ## Scope and invariants
 
@@ -22,8 +25,10 @@ failure without creating trusted probe evidence or changing any ECU behavior.
 
 1. The existing payload returns its complete, CRC-valid comprehensive stream.
 2. The host decodes the one outcome status. If its primary or cleanup field is
-   nonzero, it extracts only validated unsigned DCRA fields from that returned
-   stream.
+   nonzero, it extracts only validated scalar diagnostics from that returned
+   stream: identity, payload identity, outcome, magic words, full DCRA record,
+   all FACI snapshots, and address/length/SHA-256/CRC32 summaries of each
+   returned region.
 3. The host atomically replaces
    `/data/eps-patch/artifacts/failures/last-probe-failure.json`. A temporary
    sibling is fsynced and renamed; no partial final JSON is exposed.
@@ -37,10 +42,14 @@ probe report. Its exact useful content is:
 
 - UTC creation time;
 - workflow label and schema;
+- ECU/Panda identity observed for this execution;
 - reviewed payload name and envelope SHA-256;
 - primary and cleanup outcome codes;
-- `entry_ctl`, `entry_cout`, `exit_ctl`, `exit_cout`;
-- original and hypothetical DCRA raw results; and
+- both returned magic words;
+- all DCRA fields: entry/exit `CTL` and `COUT`, range, adjustment address,
+  original/patched adjustment words, and original/hypothetical raw results;
+- all five named, width-preserving FACI snapshots returned by the payload;
+- each returned region's base address, length, SHA-256, and CRC32; and
 - the original non-PASS error text.
 
 The parent `failures/` directory is separate from the trusted `probe/`
@@ -50,15 +59,16 @@ workflow does not accumulate intermediate artifacts.
 ## Boundaries
 
 Only a complete, structurally valid comprehensive result with a nonzero
-outcome receives this DCRA report. Preflight, identity, transport, payload,
-and malformed-stream failures do not have trustworthy DCRA values and do not
-write a synthetic report. A filesystem failure while recording the diagnostic
-must not turn a non-PASS result into PASS; the operator receives the original
-probe failure with an added report-write failure detail.
+outcome receives this diagnostic report. Preflight, identity, transport,
+payload, and malformed-stream failures do not have trustworthy complete data
+and do not write a synthetic report. A filesystem failure while recording the
+diagnostic must not turn a non-PASS result into PASS; the operator receives
+the original probe failure with an added report-write failure detail.
 
 ## Tests
 
 Tests will demonstrate that a primary=3 result writes the fixed JSON, exposes
-the six DCRA values in the raised diagnostic, creates no trusted probe
+the DCRA entry/exit values and report path in the raised diagnostic, contains
+the complete scalar snapshot described above, creates no trusted probe
 directory, and leaves the reviewed payload untouched. A PASS must leave no
 diagnostic report and retain the existing atomic trusted-evidence behavior.
