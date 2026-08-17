@@ -65,6 +65,16 @@ def _patch_state(
       "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
       "TARGET_COMMITTED", "CRC_PRECHECKED", "CRC_ARMED", "CRC_INDETERMINATE",
     )
+  elif result == "TARGET_COMMITTED":
+    states = (
+      "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+      "TARGET_COMMITTED",
+    )
+  elif result == "CRC_COMMITTED":
+    states = (
+      "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+      "TARGET_COMMITTED", "CRC_PRECHECKED", "CRC_ARMED", "CRC_COMMITTED",
+    )
   elif result == "PASS":
     states = (
       "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
@@ -308,9 +318,11 @@ def _live_read_result(target_sector: bytes, crc_sector: bytes) -> StreamResult:
   (
     ("TARGET_INDETERMINATE", ["target"], "other", "source", (), ("other", "source")),
     ("TARGET_INDETERMINATE", ["target"], "source", "source", (), ("source", "source")),
+    ("TARGET_COMMITTED", ["target"], "candidate", "source", (), ("candidate", "source")),
     ("RECOVERY_REQUIRED", ["target"], "candidate", "source", (), ("candidate", "source")),
     ("CRC_INDETERMINATE", ["crc", "target"], "candidate", "other", (), ("candidate", "other")),
     ("RECOVERY_REQUIRED", ["crc", "target"], "candidate", "candidate", (), ("candidate", "candidate")),
+    ("CRC_COMMITTED", ["crc", "target"], "candidate", "candidate", (), ("candidate", "candidate")),
     (
       "RECOVERY_REQUIRED", ["crc", "target"], "candidate", "source",
       (patch_fx.TARGET.crc_sector_base,), ("candidate", "source"),
@@ -646,6 +658,7 @@ def _run_restore(
   wrong_identity=False,
   exact_confirmation=True,
   live_overrides=None,
+  incident_result=None,
 ):
   from eps_patch.restore import RestoreError, run_restore
 
@@ -658,7 +671,9 @@ def _run_restore(
     target_candidate,
     crc_candidate,
   ) = _probe_case(tmp_path)
-  result = "RECOVERY_REQUIRED" if len(order) == 2 else "TARGET_INDETERMINATE"
+  result = incident_result or (
+    "RECOVERY_REQUIRED" if len(order) == 2 else "TARGET_INDETERMINATE"
+  )
   incident_path = _patch_state(layout, result=result, restore_order=list(order))
   boot_identity = BootloaderIdentity(identity.boot_software_id, identity.panda_serial)
   wrong = BootloaderIdentity(identity.boot_software_id, "other-panda")
@@ -678,7 +693,10 @@ def _run_restore(
     elif len(order) == 2:
       live_target, live_crc = target_candidate, crc_source
     else:
-      live_target, live_crc = target_source, crc_source
+      live_target, live_crc = (
+        target_candidate if result == "TARGET_COMMITTED" else target_source,
+        crc_source,
+      )
     if live_overrides is not None and name in live_overrides:
       live_target, live_crc = live_overrides[name]
     transports.extend((
@@ -714,24 +732,29 @@ def _run_restore(
 
   confirmations = []
   power_prompts = []
-  try:
-    report = run_restore(
-      layout=layout,
-      payloads=_restore_payloads(),
-      templates=_restore_templates(),
-      preflight=lambda: events.append(("preflight",)),
-      transport_factory=factory,
-      confirmation=lambda prompt: confirmations.append(prompt) or (
-        prompt if exact_confirmation else prompt + " "
-      ),
-      power_cycle_checkpoint=lambda prompt: (
-        power_prompts.append(prompt), events.append(("power", prompt)), "",
-      )[-1],
-      target=target,
-      new_uds=False,
-    )
-  except RestoreError:
-    report = None
+  report = None
+  for _invocation in range(len(order) * 3):
+    try:
+      report = run_restore(
+        layout=layout,
+        payloads=_restore_payloads(),
+        templates=_restore_templates(),
+        preflight=lambda: events.append(("preflight",)),
+        transport_factory=factory,
+        confirmation=lambda prompt: confirmations.append(prompt) or (
+          prompt if exact_confirmation else prompt + " "
+        ),
+        power_cycle_checkpoint=lambda prompt: (
+          power_prompts.append(prompt), events.append(("power", prompt)), None,
+        )[-1],
+        target=target,
+        new_uds=False,
+      )
+    except RestoreError:
+      report = None
+      break
+    if report.name == "restore-report.json":
+      break
   attempts = sorted(layout.restore_root.iterdir())
   assert len(attempts) == 1
   return (
@@ -777,9 +800,31 @@ def test_restore_crc_first_then_target_with_fresh_identity_and_exact_confirmatio
   assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x60000 ")
   incident_digest = sha256_bytes(incident_path.read_bytes())
   assert all(incident_digest in prompt for prompt in confirmations)
-  assert any("CRC_COMMITTED -> TARGET_ECHO_PENDING" in prompt for prompt in power_prompts)
+  assert any("CRC_COMMITTED -> TARGET_ECHO_VERIFIED" in prompt for prompt in power_prompts)
   assert (state_path.parent / "returned-sector-0xf8000.bin").exists()
   assert (state_path.parent / "returned-sector-0x60000.bin").exists()
+
+
+@pytest.mark.parametrize(
+  ("incident_result", "order"),
+  (
+    ("TARGET_COMMITTED", ("target",)),
+    ("CRC_COMMITTED", ("crc", "target")),
+  ),
+)
+def test_restore_accepts_planned_committed_patch_checkpoint(
+  tmp_path,
+  incident_result,
+  order,
+):
+  report, state_path, _incident, _events, _confirmations, _prompts = _run_restore(
+    tmp_path,
+    order=order,
+    incident_result=incident_result,
+  )
+
+  assert report == state_path.parent / "restore-report.json"
+  assert json.loads(state_path.read_text(encoding="utf-8"))["result"] == "PASS"
 
 
 def test_restore_live_reads_both_sectors_before_each_writer_arm(tmp_path):
@@ -1057,6 +1102,49 @@ def test_terminal_pre_arm_failure_does_not_block_a_new_restore_attempt(tmp_path)
   _write_prior_restore_state(layout, plan, result="FAILED")
 
   assert _reject_prior_restore(layout, plan) is None
+
+
+def test_pass_restore_supersedes_incident_by_timestamp_after_state_hash_changes(tmp_path):
+  """Using the mutable state digest as incident identity can repeat a writer."""
+  from eps_patch.restore import (
+    RestoreError,
+    _reject_prior_restore,
+    run_restore,
+    select_restore_plan,
+  )
+
+  layout, target, *_case = _probe_case(tmp_path)
+  incident_path = _patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+  )
+  original_plan = select_restore_plan(layout)
+  _write_prior_restore_state(layout, original_plan, result="PASS")
+  incident = json.loads(incident_path.read_text(encoding="utf-8"))
+  incident["transitions"][0]["evidence"]["state"] = "same incident, new digest"
+  incident_path.write_text(json.dumps(incident), encoding="utf-8")
+  changed_plan = select_restore_plan(layout)
+
+  assert changed_plan.incident_timestamp == original_plan.incident_timestamp
+  assert changed_plan.incident_state_sha256 != original_plan.incident_state_sha256
+  assert _reject_prior_restore(
+    layout, changed_plan, allow_selected_pass=True,
+  ) is True
+  events = []
+  with pytest.raises(RestoreError, match="already has a PASS restore"):
+    run_restore(
+      layout=layout,
+      payloads=_restore_payloads(),
+      templates=_restore_templates(),
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport"),
+      confirmation=lambda prompt: prompt,
+      power_cycle_checkpoint=lambda _prompt: None,
+      target=target,
+      new_uds=False,
+    )
+  assert events == []
 
 
 def test_malformed_prior_failed_restore_does_not_bypass_one_shot_guard(tmp_path):

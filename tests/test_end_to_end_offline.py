@@ -279,22 +279,26 @@ class OfflineBench:
       ),
     ]
     transports = [_PatchTransport(self.identity, result) for result in results]
-    return run_patch(
-      layout=layout,
-      payloads={name: self._payload(name) for name in (
-        "crc_probe", "crc_intermediate", "crc_verify",
-      )},
-      templates={
-        name: (Path(__file__).resolve().parents[1] / "payload" / "build" / f"{name}.bin").read_bytes()
-        for name in ("write_target_candidate", "write_crc_candidate")
-      },
-      preflight=lambda: None,
-      transport_factory=lambda: transports.pop(0),
-      confirmation=lambda prompt: prompt,
-      power_cycle_checkpoint=lambda _prompt: "",
-      target=self.target,
-      new_uds=False,
-    )
+    result = None
+    for _invocation in range(4):
+      result = run_patch(
+        layout=layout,
+        payloads={name: self._payload(name) for name in (
+          "crc_probe", "crc_intermediate", "crc_verify",
+        )},
+        templates={
+          name: (Path(__file__).resolve().parents[1] / "payload" / "build" / f"{name}.bin").read_bytes()
+          for name in ("write_target_candidate", "write_crc_candidate")
+        },
+        preflight=lambda: None,
+        transport_factory=lambda: transports.pop(0),
+        confirmation=lambda prompt: prompt,
+        power_cycle_checkpoint=lambda _prompt: None,
+        target=self.target,
+        new_uds=False,
+      )
+    assert result is not None
+    return result
 
   def create_crc_indeterminate_fixture(self, layout):
     from eps_patch.artifacts import sha256_bytes
@@ -389,21 +393,25 @@ class OfflineBench:
       transport.run_staged_payload = tracked_run
       return transport
 
-    return run_restore(
-      layout=layout,
-      payloads={name: self._payload(name) for name in ("ram_echo", "live_read")},
-      templates={
-        "restore_sector": (
-          Path(__file__).resolve().parents[1] / "payload" / "build" / "restore_sector.bin"
-        ).read_bytes(),
-      },
-      preflight=lambda: None,
-      transport_factory=transport_factory,
-      confirmation=lambda prompt: prompt,
-      power_cycle_checkpoint=lambda _prompt: "",
-      target=self.target,
-      new_uds=False,
-    )
+    result = None
+    for _invocation in range(6):
+      result = run_restore(
+        layout=layout,
+        payloads={name: self._payload(name) for name in ("ram_echo", "live_read")},
+        templates={
+          "restore_sector": (
+            Path(__file__).resolve().parents[1] / "payload" / "build" / "restore_sector.bin"
+          ).read_bytes(),
+        },
+        preflight=lambda: None,
+        transport_factory=transport_factory,
+        confirmation=lambda prompt: prompt,
+        power_cycle_checkpoint=lambda _prompt: None,
+        target=self.target,
+        new_uds=False,
+      )
+    assert result is not None
+    return result
 
 
 def test_probe_patch_restore_lifecycle_without_external_paths(tmp_path):

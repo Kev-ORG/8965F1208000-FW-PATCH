@@ -246,22 +246,17 @@ def _run_patch(tmp_path, *, failure_stage=None):
 
   if failure_stage == "before-target-arm":
     transports[0].failure = RuntimeError("precheck failed")
+  if failure_stage == "target-committed":
+    transports[2].failure = RuntimeError("CRC precheck failed")
+  if failure_stage == "crc-committed":
+    transports[4].failure = RuntimeError("final verify failed")
 
   def factory():
     assert transports
     return transports.pop(0)
 
-  power_count = 0
-
   def power(prompt):
-    nonlocal power_count
-    power_count += 1
     events.append(("power", prompt))
-    if failure_stage == "target-committed" and power_count == 2:
-      raise RuntimeError("cycle failed")
-    if failure_stage == "crc-committed" and power_count == 3:
-      raise RuntimeError("cycle failed")
-    return ""
 
   confirmations = []
 
@@ -269,20 +264,25 @@ def _run_patch(tmp_path, *, failure_stage=None):
     confirmations.append(prompt)
     return prompt
 
-  try:
-    result = run_patch(
-      layout=layout,
-      payloads=_payloads(),
-      templates=_templates(),
-      preflight=lambda: events.append(("preflight",)),
-      transport_factory=factory,
-      confirmation=confirmation,
-      power_cycle_checkpoint=power,
-      target=target,
-      new_uds=False,
-    )
-  except PatchError:
-    result = None
+  result = None
+  for _invocation in range(4):
+    try:
+      result = run_patch(
+        layout=layout,
+        payloads=_payloads(),
+        templates=_templates(),
+        preflight=lambda: events.append(("preflight",)),
+        transport_factory=factory,
+        confirmation=confirmation,
+        power_cycle_checkpoint=power,
+        target=target,
+        new_uds=False,
+      )
+    except PatchError:
+      result = None
+      break
+    if result.name == "patch-report.json":
+      break
   attempts = sorted(layout.patch_root.iterdir())
   assert len(attempts) == 1
   return result, attempts[0] / "state.json", events, confirmations
@@ -407,20 +407,22 @@ def test_patch_allows_a_new_attempt_after_the_incident_restore_passes(tmp_path, 
   )
   events = []
 
+  arguments = {
+    "layout": layout,
+    "payloads": _payloads(),
+    "templates": _templates(),
+    "preflight": lambda: events.append("preflight"),
+    "transport_factory": lambda: events.append("transport"),
+    "confirmation": lambda _prompt: "",
+    "power_cycle_checkpoint": lambda _prompt: None,
+    "target": target,
+    "new_uds": False,
+  }
+  assert run_patch(**arguments).name == "state.json"
   with pytest.raises(PatchError, match="patch stopped in FAILED"):
-    run_patch(
-      layout=layout,
-      payloads=_payloads(),
-      templates=_templates(),
-      preflight=lambda: events.append("preflight"),
-      transport_factory=lambda: events.append("transport"),
-      confirmation=lambda _prompt: "",
-      power_cycle_checkpoint=lambda _prompt: "",
-      target=target,
-      new_uds=False,
-    )
+    run_patch(**arguments)
 
-  assert events == ["preflight", "transport"]
+  assert events == ["preflight", "preflight", "transport"]
 
 
 def test_patch_rejects_an_older_unresolved_incident_masked_by_a_newer_restore(

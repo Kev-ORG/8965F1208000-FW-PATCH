@@ -124,6 +124,8 @@ def test_main_uses_the_fixed_artifact_root_and_prints_report(cli_module, monkeyp
 
   assert cli_module.main() == 0
   assert observed["layout"] == ArtifactLayout(DEFAULT_ARTIFACT_ROOT)
+  assert observed["confirmation"] is input
+  assert observed["power_cycle_checkpoint"] is print
   assert capsys.readouterr().out == "/reports/probe.json\n"
 
 

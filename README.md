@@ -55,11 +55,13 @@ writes the target sector (`0x60000`) first, then the CRC sector (`0xf8000`).
 Each write is prechecked against the stored semantic PASS and a fresh live
 readback.
 
-The command stops at every displayed complete power-cycle checkpoint. Switch
-off vehicle/EPS power, wait for complete discharge, restore stable power, and
-Press Enter only after the complete power cycle. A UDS reset is never a power
-cycle. For a successful patch, do this after `PROBED`, after
-`TARGET_COMMITTED`, and after `CRC_COMMITTED`; reconnect only when prompted.
+At every displayed complete power-cycle checkpoint, the command durably saves
+the completed stage, prints the instruction, and exits. Switch off vehicle/EPS
+power, wait for complete discharge, restore stable power, and let comma restart.
+Then rerun the same `python3.12 eps_patch.py patch` command. A UDS reset is
+never a power cycle. For a successful patch, do this after `PROBED`, after
+`TARGET_COMMITTED`, and after `CRC_COMMITTED`. Each rerun continues only the
+next persisted safe stage in the same attempt.
 
 At each destructive writer prompt, inspect the displayed sector, source,
 candidate, CRC, and envelope values. Enter the exact confirmation text shown
@@ -90,13 +92,15 @@ the fixed semantic PASS. For a two-sector incident it restores the CRC sector
 restores only the target sector.
 
 For every selected sector, the command checks the original backup in RAM,
-requires a complete power cycle before the live read, checks both live sectors,
-requires another complete power cycle before arming the writer, and requires
-the exact displayed `RESTORE-SECTOR` confirmation. Between two sectors it
-requires another complete power cycle after CRC commit before beginning the
-target-sector checks. At every checkpoint: switch off vehicle/EPS power, wait
-for complete discharge, restore stable power, and Press Enter only after the
-complete power cycle.
+persists the stage and exits for a complete power cycle before the live read,
+checks both live sectors, persists the stage and exits for another complete
+power cycle before arming the writer, and requires the exact displayed
+`RESTORE-SECTOR` confirmation. Between two sectors it persists the CRC commit
+and exits for another complete power cycle before beginning the target-sector
+checks. At every checkpoint: switch off vehicle/EPS power, wait for complete
+discharge, restore stable power, let comma restart, and rerun the same
+`python3.12 eps_patch.py restore` command. Each rerun performs only the one
+persisted next safe stage.
 
 `restore` never retries a writer. If it reports `INDETERMINATE`, live state is
 uncertain, confirmation fails, or a writer/readback communication error occurs,

@@ -26,7 +26,7 @@ from .manifest import TARGET, TargetManifest
 from .operation_lock import exclusive_operation
 from .paths import ArtifactLayout
 from .payload import REVIEWED_TEMPLATE_MANIFESTS
-from .power import request_power_cycle
+from .power import PowerCycleCheckpoint, request_power_cycle
 from .protocol import (
   CrcObservation,
   OP_CRC_INTERMEDIATE,
@@ -80,6 +80,18 @@ _PAYLOAD_DIGESTS = {
   "crc_verify": CRC_VERIFY_ENVELOPE_SHA256,
 }
 _TEMPLATE_NAMES = ("write_target_candidate", "write_crc_candidate")
+_PATCH_RESUME_NEXT = {
+  PatchState.PROBED.value: PatchState.TARGET_PRECHECKED.value,
+  PatchState.TARGET_COMMITTED.value: PatchState.CRC_PRECHECKED.value,
+  PatchState.CRC_COMMITTED.value: PatchState.VERIFY_PENDING.value,
+}
+
+
+class _PlannedPowerCycle(Exception):
+  def __init__(self, path: Path, checkpoint: PowerCycleCheckpoint) -> None:
+    super().__init__(checkpoint.completed_state)
+    self.path = path
+    self.checkpoint = checkpoint
 
 
 class _StateRecorder:
@@ -89,11 +101,12 @@ class _StateRecorder:
     *,
     timestamp: str,
     evidence: TrustedProbeEvidence,
+    transitions: list[dict[str, object]] | None = None,
   ) -> None:
     self.path = directory / "state.json"
     self.timestamp = timestamp
     self.evidence = evidence
-    self.transitions: list[dict[str, object]] = []
+    self.transitions = list(transitions or [])
 
   def record(
     self,
@@ -102,6 +115,7 @@ class _StateRecorder:
     restore_order: tuple[str, ...] = (),
     evidence: dict[str, object] | None = None,
     error: str | None = None,
+    power_cycle: PowerCycleCheckpoint | None = None,
   ) -> Path:
     if tuple(restore_order) not in ((), ("target",), ("crc", "target")):
       raise PatchError("patch restore order is not canonical")
@@ -116,7 +130,7 @@ class _StateRecorder:
     self.transitions.append(transition)
     try:
       report: dict[str, object] = {
-        "schema": 1,
+        "schema": 2,
         "workflow": "patch",
         "attempt": self.timestamp,
         "sequence": transition["sequence"],
@@ -133,6 +147,7 @@ class _StateRecorder:
         ),
         "automatic_forward_resume": False,
         "automatic_retry": False,
+        "power_cycle": None if power_cycle is None else power_cycle.as_dict(),
         "transitions": self.transitions,
         "validation_errors": [],
       }
@@ -182,7 +197,7 @@ def _run_patch_locked(
   target: TargetManifest = TARGET,
   new_uds: bool,
 ) -> Path:
-  """Run the reviewed target-then-CRC workflow once, with no automatic retry."""
+  """Run one safe patch stage or persist one planned restart boundary."""
   _validate_inputs(
     layout=layout,
     preflight=preflight,
@@ -194,254 +209,280 @@ def _run_patch_locked(
   )
   patch_payloads = _validate_payloads(payloads, target)
   writer_templates = _validate_templates(templates)
-  _reject_unresolved_patch_incident(layout)
+  resume = _select_patch_resume(layout)
+  _reject_unresolved_patch_incident(
+    layout,
+    resumable_timestamp=None if resume is None else resume[1].name,
+  )
   try:
     trusted = load_probe_pass(layout, target)
   except EvidenceError as exc:
     raise PatchError(f"fixed probe evidence is not a semantic PASS: {exc}") from exc
   candidate = _candidate_from_probe(trusted, target)
-  timestamp, directory = _create_attempt(layout)
-  recorder = _StateRecorder(directory, timestamp=timestamp, evidence=trusted)
-  phase = PatchState.STARTED
+  if resume is None:
+    timestamp, directory = _create_attempt(layout)
+    recorder = _StateRecorder(directory, timestamp=timestamp, evidence=trusted)
+    entry: PatchState | None = None
+  else:
+    state, directory = resume
+    semantic_probe_digest = sha256_bytes(json.dumps(
+      trusted.report,
+      sort_keys=True,
+      separators=(",", ":"),
+    ).encode("utf-8"))
+    if state["probe_report_sha256"] != semantic_probe_digest:
+      raise PatchError("resumable patch is not bound to fixed probe evidence")
+    timestamp = directory.name
+    recorder = _StateRecorder(
+      directory,
+      timestamp=timestamp,
+      evidence=trusted,
+      transitions=state["transitions"],
+    )
+    entry = PatchState(state["result"])
+  phase = PatchState.STARTED if entry is None else entry
+
+  target_candidate_crc = binascii.crc32(candidate.target_final)
+  crc_candidate_crc = binascii.crc32(candidate.crc_final)
+  source_target_crc = binascii.crc32(candidate.target_source)
+  source_crc_crc = binascii.crc32(candidate.crc_source)
+  planned: _PlannedPowerCycle | None = None
 
   try:
-    recorder.record(
-      PatchState.STARTED,
-      evidence={"probe_report": str(layout.probe_report)},
-    )
-    preflight()
-    recorder.record(
-      PatchState.PROBED,
-      evidence={
-        "identity": _identity_record(trusted.identity),
-        "target_source_sha256": sha256_bytes(candidate.target_source),
-        "crc_source_sha256": sha256_bytes(candidate.crc_source),
-        "target_candidate_sha256": sha256_bytes(candidate.target_final),
-        "crc_candidate_sha256": sha256_bytes(candidate.crc_final),
-      },
-    )
-
-    target_candidate_crc = binascii.crc32(candidate.target_final)
-    crc_candidate_crc = binascii.crc32(candidate.crc_final)
-    source_target_crc = binascii.crc32(candidate.target_source)
-    source_crc_crc = binascii.crc32(candidate.crc_source)
-
-    request_power_cycle(
-      PatchState.PROBED.value,
-      PatchState.TARGET_PRECHECKED.value,
-      power_cycle_checkpoint,
-    )
-    with transport_factory() as transport:
-      current_identity = transport.read_identity()
-      _require_application_identity(current_identity, trusted.identity, target)
-      target_precheck = transport.run_staged_payload(
-        patch_payloads["crc_probe"],
-        ram_blob=RamBlob(target.sram_buffer, candidate.target_final),
-        operation=OP_CRC_PROBE,
-        new_uds=new_uds,
-      )
-    _validate_target_precheck(target_precheck, candidate, target)
-    precheck_target, precheck_crc = _regions(target_precheck, target, "target precheck")
-    _persist_sector(directory / "precheck-target-source.bin", precheck_target, target)
-    _persist_sector(directory / "precheck-crc-source.bin", precheck_crc, target)
-    recorder.record(
-      PatchState.TARGET_PRECHECKED,
-      evidence={
-        "identity": _identity_record(current_identity),
-        "target_readback_sha256": sha256_bytes(precheck_target),
-        "crc_readback_sha256": sha256_bytes(precheck_crc),
-        "staged_target_crc32": f"0x{target_candidate_crc:08x}",
-        "payload": _payload_record(patch_payloads["crc_probe"]),
-      },
-    )
-
-    target_intent = CandidateWriterIntent.for_target(
-      live_target_crc32=source_target_crc,
-      live_crc_crc32=source_crc_crc,
-      staged_candidate_crc32=target_candidate_crc,
-      live_target_instruction=target.original_instruction,
-      live_adjustment=candidate.old_adjustment,
-      staged_context=target.patched_instruction,
-      candidate_adjustment=candidate.new_adjustment,
-    )
-    target_writer = build_target_candidate_payload_image(
-      template=writer_templates["write_target_candidate"],
-      manifest=REVIEWED_TEMPLATE_MANIFESTS["write_target_candidate"],
-      intent=target_intent,
-      staged_candidate=candidate.target_final,
-    )
-    target_prompt = _writer_prompt(
-      "TARGET",
-      target=target,
-      sector_base=target.sector_base,
-      source=candidate.target_source,
-      candidate=candidate.target_final,
-      staged_crc32=target_candidate_crc,
-      envelope_sha256=target_writer.payload.sha256,
-    )
-    with transport_factory() as transport:
-      current_identity = transport.read_identity()
-      _require_application_identity(current_identity, trusted.identity, target)
-      target_confirmation = _require_exact_confirmation(
-        confirmation,
-        target_prompt,
-        label="target writer",
-      )
+    if entry is None:
       recorder.record(
-        PatchState.TARGET_ARMED,
-        restore_order=("target",),
+        PatchState.STARTED,
+        evidence={"probe_report": str(layout.probe_report)},
+      )
+      preflight()
+      checkpoint = PowerCycleCheckpoint(
+        PatchState.PROBED.value,
+        PatchState.TARGET_PRECHECKED.value,
+      )
+      path = recorder.record(
+        PatchState.PROBED,
+        evidence={
+          "identity": _identity_record(trusted.identity),
+          "target_source_sha256": sha256_bytes(candidate.target_source),
+          "crc_source_sha256": sha256_bytes(candidate.crc_source),
+          "target_candidate_sha256": sha256_bytes(candidate.target_final),
+          "crc_candidate_sha256": sha256_bytes(candidate.crc_final),
+        },
+        power_cycle=checkpoint,
+      )
+      raise _PlannedPowerCycle(path, checkpoint)
+
+    preflight()
+    if entry is PatchState.PROBED:
+      with transport_factory() as transport:
+        current_identity = transport.read_identity()
+        _require_application_identity(current_identity, trusted.identity, target)
+        target_precheck = transport.run_staged_payload(
+          patch_payloads["crc_probe"],
+          ram_blob=RamBlob(target.sram_buffer, candidate.target_final),
+          operation=OP_CRC_PROBE,
+          new_uds=new_uds,
+        )
+      _validate_target_precheck(target_precheck, candidate, target)
+      precheck_target, precheck_crc = _regions(
+        target_precheck, target, "target precheck",
+      )
+      _persist_sector(directory / "precheck-target-source.bin", precheck_target, target)
+      _persist_sector(directory / "precheck-crc-source.bin", precheck_crc, target)
+      recorder.record(
+        PatchState.TARGET_PRECHECKED,
         evidence={
           "identity": _identity_record(current_identity),
-          "confirmation": target_confirmation,
-          "operation": OP_WRITE_TARGET_CANDIDATE,
-          "sector_base": f"0x{target.sector_base:x}",
-          "source_sha256": sha256_bytes(candidate.target_source),
-          "candidate_sha256": sha256_bytes(candidate.target_final),
-          "staged_crc32": f"0x{target_candidate_crc:08x}",
-          "payload": _writer_payload_record(target_writer),
+          "target_readback_sha256": sha256_bytes(precheck_target),
+          "crc_readback_sha256": sha256_bytes(precheck_crc),
+          "staged_target_crc32": f"0x{target_candidate_crc:08x}",
+          "payload": _payload_record(patch_payloads["crc_probe"]),
         },
       )
-      phase = PatchState.TARGET_ARMED
-      target_result = transport.run_staged_payload(
-        target_writer.payload,
-        ram_blob=RamBlob(target.sram_buffer, candidate.target_final),
+      target_intent = CandidateWriterIntent.for_target(
+        live_target_crc32=source_target_crc,
+        live_crc_crc32=source_crc_crc,
+        staged_candidate_crc32=target_candidate_crc,
+        live_target_instruction=target.original_instruction,
+        live_adjustment=candidate.old_adjustment,
+        staged_context=target.patched_instruction,
+        candidate_adjustment=candidate.new_adjustment,
+      )
+      target_writer = build_target_candidate_payload_image(
+        template=writer_templates["write_target_candidate"],
+        manifest=REVIEWED_TEMPLATE_MANIFESTS["write_target_candidate"],
+        intent=target_intent,
+        staged_candidate=candidate.target_final,
+      )
+      target_prompt = _writer_prompt(
+        "TARGET",
+        target=target,
+        sector_base=target.sector_base,
+        source=candidate.target_source,
+        candidate=candidate.target_final,
+        staged_crc32=target_candidate_crc,
+        envelope_sha256=target_writer.payload.sha256,
+      )
+      with transport_factory() as transport:
+        current_identity = transport.read_identity()
+        _require_application_identity(current_identity, trusted.identity, target)
+        target_confirmation = _require_exact_confirmation(
+          confirmation, target_prompt, label="target writer",
+        )
+        recorder.record(
+          PatchState.TARGET_ARMED,
+          restore_order=("target",),
+          evidence={
+            "identity": _identity_record(current_identity),
+            "confirmation": target_confirmation,
+            "operation": OP_WRITE_TARGET_CANDIDATE,
+            "sector_base": f"0x{target.sector_base:x}",
+            "source_sha256": sha256_bytes(candidate.target_source),
+            "candidate_sha256": sha256_bytes(candidate.target_final),
+            "staged_crc32": f"0x{target_candidate_crc:08x}",
+            "payload": _writer_payload_record(target_writer),
+          },
+        )
+        phase = PatchState.TARGET_ARMED
+        target_result = transport.run_staged_payload(
+          target_writer.payload,
+          ram_blob=RamBlob(target.sram_buffer, candidate.target_final),
+          operation=OP_WRITE_TARGET_CANDIDATE,
+          new_uds=new_uds,
+        )
+      _validate_writer_result(
+        target_result,
         operation=OP_WRITE_TARGET_CANDIDATE,
-        new_uds=new_uds,
+        expected_sector=candidate.target_final,
       )
-    _validate_writer_result(
-      target_result,
-      operation=OP_WRITE_TARGET_CANDIDATE,
-      expected_sector=candidate.target_final,
-    )
-    phase = PatchState.TARGET_COMMITTED
-    _persist_sector(
-      directory / "returned-target-candidate.bin",
-      target_result.sector,
-      target,
-    )
-    recorder.record(
-      PatchState.TARGET_COMMITTED,
-      restore_order=("target",),
-      evidence={
-        "returned_sha256": sha256_bytes(target_result.sector),
-        "statuses": _status_records(target_result),
-      },
-    )
-
-    request_power_cycle(
-      PatchState.TARGET_COMMITTED.value,
-      PatchState.CRC_PRECHECKED.value,
-      power_cycle_checkpoint,
-    )
-    with transport_factory() as transport:
-      boot_identity = transport.read_bootloader_identity()
-      _require_boot_identity(boot_identity, trusted.identity)
-      crc_precheck = transport.run_staged_payload(
-        patch_payloads["crc_intermediate"],
-        ram_blob=RamBlob(target.sram_buffer, candidate.crc_final),
-        operation=OP_CRC_INTERMEDIATE,
-        new_uds=new_uds,
+      phase = PatchState.TARGET_COMMITTED
+      _persist_sector(
+        directory / "returned-target-candidate.bin", target_result.sector, target,
       )
-    _validate_crc_precheck(crc_precheck, candidate, target)
-    intermediate_target, intermediate_crc = _regions(
-      crc_precheck,
-      target,
-      "CRC intermediate",
-    )
-    _persist_sector(
-      directory / "intermediate-target-candidate.bin",
-      intermediate_target,
-      target,
-    )
-    _persist_sector(
-      directory / "intermediate-crc-source.bin",
-      intermediate_crc,
-      target,
-    )
-    recorder.record(
-      PatchState.CRC_PRECHECKED,
-      restore_order=("target",),
-      evidence={
-        "identity": _boot_identity_record(boot_identity),
-        "target_readback_sha256": sha256_bytes(intermediate_target),
-        "crc_readback_sha256": sha256_bytes(intermediate_crc),
-        "staged_crc_candidate_crc32": f"0x{crc_candidate_crc:08x}",
-        "payload": _payload_record(patch_payloads["crc_intermediate"]),
-      },
-    )
+      checkpoint = PowerCycleCheckpoint(
+        PatchState.TARGET_COMMITTED.value,
+        PatchState.CRC_PRECHECKED.value,
+      )
+      path = recorder.record(
+        PatchState.TARGET_COMMITTED,
+        restore_order=("target",),
+        evidence={
+          "returned_sha256": sha256_bytes(target_result.sector),
+          "statuses": _status_records(target_result),
+        },
+        power_cycle=checkpoint,
+      )
+      raise _PlannedPowerCycle(path, checkpoint)
 
-    crc_intent = CandidateWriterIntent.for_crc(
-      live_target_crc32=target_candidate_crc,
-      live_crc_crc32=source_crc_crc,
-      staged_candidate_crc32=crc_candidate_crc,
-      live_target_instruction=target.patched_instruction,
-      live_adjustment=candidate.old_adjustment,
-      staged_context=CANDIDATE_ADJUSTMENT,
-      candidate_adjustment=candidate.new_adjustment,
-    )
-    crc_writer = build_crc_candidate_payload_image(
-      template=writer_templates["write_crc_candidate"],
-      manifest=REVIEWED_TEMPLATE_MANIFESTS["write_crc_candidate"],
-      intent=crc_intent,
-      staged_candidate=candidate.crc_final,
-    )
-    crc_prompt = _writer_prompt(
-      "CRC",
-      target=target,
-      sector_base=target.crc_sector_base,
-      source=candidate.crc_source,
-      candidate=candidate.crc_final,
-      staged_crc32=crc_candidate_crc,
-      envelope_sha256=crc_writer.payload.sha256,
-    )
-    with transport_factory() as transport:
-      boot_identity = transport.read_bootloader_identity()
-      _require_boot_identity(boot_identity, trusted.identity)
-      crc_confirmation = _require_exact_confirmation(
-        confirmation,
-        crc_prompt,
-        label="CRC writer",
+    if entry is PatchState.TARGET_COMMITTED:
+      with transport_factory() as transport:
+        boot_identity = transport.read_bootloader_identity()
+        _require_boot_identity(boot_identity, trusted.identity)
+        crc_precheck = transport.run_staged_payload(
+          patch_payloads["crc_intermediate"],
+          ram_blob=RamBlob(target.sram_buffer, candidate.crc_final),
+          operation=OP_CRC_INTERMEDIATE,
+          new_uds=new_uds,
+        )
+      _validate_crc_precheck(crc_precheck, candidate, target)
+      intermediate_target, intermediate_crc = _regions(
+        crc_precheck, target, "CRC intermediate",
+      )
+      _persist_sector(
+        directory / "intermediate-target-candidate.bin", intermediate_target, target,
+      )
+      _persist_sector(
+        directory / "intermediate-crc-source.bin", intermediate_crc, target,
       )
       recorder.record(
-        PatchState.CRC_ARMED,
-        restore_order=("crc", "target"),
+        PatchState.CRC_PRECHECKED,
+        restore_order=("target",),
         evidence={
           "identity": _boot_identity_record(boot_identity),
-          "confirmation": crc_confirmation,
-          "operation": OP_WRITE_CRC_CANDIDATE,
-          "sector_base": f"0x{target.crc_sector_base:x}",
-          "source_sha256": sha256_bytes(candidate.crc_source),
-          "candidate_sha256": sha256_bytes(candidate.crc_final),
-          "staged_crc32": f"0x{crc_candidate_crc:08x}",
-          "payload": _writer_payload_record(crc_writer),
+          "target_readback_sha256": sha256_bytes(intermediate_target),
+          "crc_readback_sha256": sha256_bytes(intermediate_crc),
+          "staged_crc_candidate_crc32": f"0x{crc_candidate_crc:08x}",
+          "payload": _payload_record(patch_payloads["crc_intermediate"]),
         },
       )
-      phase = PatchState.CRC_ARMED
-      crc_result = transport.run_staged_payload(
-        crc_writer.payload,
-        ram_blob=RamBlob(target.sram_buffer, candidate.crc_final),
-        operation=OP_WRITE_CRC_CANDIDATE,
-        new_uds=new_uds,
+      crc_intent = CandidateWriterIntent.for_crc(
+        live_target_crc32=target_candidate_crc,
+        live_crc_crc32=source_crc_crc,
+        staged_candidate_crc32=crc_candidate_crc,
+        live_target_instruction=target.patched_instruction,
+        live_adjustment=candidate.old_adjustment,
+        staged_context=CANDIDATE_ADJUSTMENT,
+        candidate_adjustment=candidate.new_adjustment,
       )
-    _validate_writer_result(
-      crc_result,
-      operation=OP_WRITE_CRC_CANDIDATE,
-      expected_sector=candidate.crc_final,
-    )
-    phase = PatchState.CRC_COMMITTED
-    _persist_sector(
-      directory / "returned-crc-candidate.bin",
-      crc_result.sector,
-      target,
-    )
-    recorder.record(
-      PatchState.CRC_COMMITTED,
-      restore_order=("crc", "target"),
-      evidence={
-        "returned_sha256": sha256_bytes(crc_result.sector),
-        "statuses": _status_records(crc_result),
-      },
-    )
+      crc_writer = build_crc_candidate_payload_image(
+        template=writer_templates["write_crc_candidate"],
+        manifest=REVIEWED_TEMPLATE_MANIFESTS["write_crc_candidate"],
+        intent=crc_intent,
+        staged_candidate=candidate.crc_final,
+      )
+      crc_prompt = _writer_prompt(
+        "CRC",
+        target=target,
+        sector_base=target.crc_sector_base,
+        source=candidate.crc_source,
+        candidate=candidate.crc_final,
+        staged_crc32=crc_candidate_crc,
+        envelope_sha256=crc_writer.payload.sha256,
+      )
+      with transport_factory() as transport:
+        boot_identity = transport.read_bootloader_identity()
+        _require_boot_identity(boot_identity, trusted.identity)
+        crc_confirmation = _require_exact_confirmation(
+          confirmation, crc_prompt, label="CRC writer",
+        )
+        recorder.record(
+          PatchState.CRC_ARMED,
+          restore_order=("crc", "target"),
+          evidence={
+            "identity": _boot_identity_record(boot_identity),
+            "confirmation": crc_confirmation,
+            "operation": OP_WRITE_CRC_CANDIDATE,
+            "sector_base": f"0x{target.crc_sector_base:x}",
+            "source_sha256": sha256_bytes(candidate.crc_source),
+            "candidate_sha256": sha256_bytes(candidate.crc_final),
+            "staged_crc32": f"0x{crc_candidate_crc:08x}",
+            "payload": _writer_payload_record(crc_writer),
+          },
+        )
+        phase = PatchState.CRC_ARMED
+        crc_result = transport.run_staged_payload(
+          crc_writer.payload,
+          ram_blob=RamBlob(target.sram_buffer, candidate.crc_final),
+          operation=OP_WRITE_CRC_CANDIDATE,
+          new_uds=new_uds,
+        )
+      _validate_writer_result(
+        crc_result,
+        operation=OP_WRITE_CRC_CANDIDATE,
+        expected_sector=candidate.crc_final,
+      )
+      phase = PatchState.CRC_COMMITTED
+      _persist_sector(
+        directory / "returned-crc-candidate.bin", crc_result.sector, target,
+      )
+      checkpoint = PowerCycleCheckpoint(
+        PatchState.CRC_COMMITTED.value,
+        PatchState.VERIFY_PENDING.value,
+      )
+      path = recorder.record(
+        PatchState.CRC_COMMITTED,
+        restore_order=("crc", "target"),
+        evidence={
+          "returned_sha256": sha256_bytes(crc_result.sector),
+          "statuses": _status_records(crc_result),
+        },
+        power_cycle=checkpoint,
+      )
+      raise _PlannedPowerCycle(path, checkpoint)
+
+    if entry is not PatchState.CRC_COMMITTED:
+      raise PatchError("patch state is not restart-resumable")
+    phase = PatchState.VERIFY_PENDING
     recorder.record(
       PatchState.VERIFY_PENDING,
       restore_order=("crc", "target"),
@@ -450,19 +491,11 @@ def _run_patch_locked(
         "crc_candidate_sha256": sha256_bytes(candidate.crc_final),
       },
     )
-
-    request_power_cycle(
-      PatchState.CRC_COMMITTED.value,
-      PatchState.VERIFY_PENDING.value,
-      power_cycle_checkpoint,
-    )
     with transport_factory() as transport:
       final_identity = transport.read_identity()
       _require_application_identity(final_identity, trusted.identity, target)
       verify_result = transport.run_payload(
-        patch_payloads["crc_verify"],
-        operation=OP_VERIFY_CRC,
-        new_uds=new_uds,
+        patch_payloads["crc_verify"], operation=OP_VERIFY_CRC, new_uds=new_uds,
       )
     observation = _validate_final_verify(verify_result, candidate, target)
     final_target, final_crc = _regions(verify_result, target, "final CRC verify")
@@ -507,6 +540,8 @@ def _run_patch_locked(
     report_path = directory / "patch-report.json"
     _atomic_create(report_path, _json_bytes(final_report))
     return report_path
+  except _PlannedPowerCycle as exc:
+    planned = exc
   except BaseException as exc:
     failure_state, restore_order = _failure_for_phase(phase)
     detail = f"{type(exc).__name__}: {exc}"
@@ -519,6 +554,14 @@ def _run_patch_locked(
     raise PatchError(
       f"patch stopped in {failure_state.value}; no operation was retried: {exc}"
     ) from exc
+  if planned is None:
+    raise PatchError("patch did not produce a report or planned checkpoint")
+  request_power_cycle(
+    planned.checkpoint.completed_state,
+    planned.checkpoint.next_state,
+    power_cycle_checkpoint,
+  )
+  return planned.path
 
 
 def _validate_inputs(
@@ -644,7 +687,11 @@ def _candidate_from_probe(
   return candidate
 
 
-def _reject_unresolved_patch_incident(layout: ArtifactLayout) -> None:
+def _reject_unresolved_patch_incident(
+  layout: ArtifactLayout,
+  *,
+  resumable_timestamp: str | None = None,
+) -> None:
   """Require a successful restore for every recoverable patch incident."""
   from .restore import (
     RestoreError,
@@ -657,6 +704,8 @@ def _reject_unresolved_patch_incident(layout: ArtifactLayout) -> None:
   except RestoreError as exc:
     raise PatchError("cannot verify persisted patch incident state") from exc
   for incident in incidents:
+    if incident.incident_timestamp == resumable_timestamp:
+      continue
     try:
       if _reject_prior_restore(layout, incident, allow_selected_pass=True):
         continue
@@ -666,6 +715,58 @@ def _reject_unresolved_patch_incident(layout: ArtifactLayout) -> None:
       "unresolved patch incident requires restore before another patch "
       f"({incident.incident_timestamp})"
     )
+
+
+def _select_patch_resume(
+  layout: ArtifactLayout,
+) -> tuple[dict[str, object], Path] | None:
+  """Select at most one exact schema-2 planned checkpoint."""
+  from .restore import (
+    RestoreError,
+    _ATTEMPT_TIMESTAMP,
+    _load_patch_state,
+    _recoverable_restore_plans,
+    _reject_prior_restore,
+  )
+
+  try:
+    entries = list(layout.patch_root.iterdir())
+  except FileNotFoundError:
+    return None
+  except OSError as exc:
+    raise PatchError("cannot inspect persisted patch attempts") from exc
+  try:
+    incident_by_timestamp = {
+      plan.incident_timestamp: plan
+      for plan in _recoverable_restore_plans(layout)
+    }
+  except RestoreError as exc:
+    raise PatchError("cannot verify persisted patch incident state") from exc
+  resumable: list[tuple[dict[str, object], Path]] = []
+  for directory in sorted(entries, key=lambda path: path.name, reverse=True):
+    if (
+      _ATTEMPT_TIMESTAMP.fullmatch(directory.name) is None
+      or not directory.is_dir()
+      or directory.is_symlink()
+    ):
+      raise PatchError("patch state layout contains an invalid attempt entry")
+    try:
+      state, _raw = _load_patch_state(directory / "state.json", directory.name)
+    except RestoreError as exc:
+      raise PatchError("cannot validate persisted patch attempt state") from exc
+    if state["schema"] != 2 or state["power_cycle"] is None:
+      continue
+    incident = incident_by_timestamp.get(directory.name)
+    if incident is not None:
+      try:
+        if _reject_prior_restore(layout, incident, allow_selected_pass=True):
+          continue
+      except RestoreError as exc:
+        raise PatchError("cannot verify persisted restore state") from exc
+    resumable.append((state, directory))
+  if len(resumable) > 1:
+    raise PatchError("multiple resumable patch attempts exist")
+  return resumable[0] if resumable else None
 
 
 def _require_application_identity(

@@ -23,13 +23,14 @@ def test_readme_documents_the_complete_comma_local_lifecycle():
     "Panda serial",
     "original target and CRC-sector backups",
     "complete power cycle",
-    "Press Enter only after",
+    "rerun the same",
     "target sector (`0x60000`) first, then the CRC sector (`0xf8000`)",
     "CRC sector (`0xf8000`) first, then the target sector (`0x60000`)",
     "external programmer",
     "professional recovery",
   ):
     assert required in normalized
+  assert "Press Enter" not in readme
 
   forbidden = (
     "download the report",

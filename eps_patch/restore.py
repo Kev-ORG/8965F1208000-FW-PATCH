@@ -26,7 +26,7 @@ from .payload import (
   SpecializedPayloadImage,
   build_specialized_payload_image,
 )
-from .power import request_power_cycle
+from .power import PowerCycleCheckpoint, request_power_cycle
 from .protocol import (
   OP_LIVE_READ, OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult,
 )
@@ -46,7 +46,7 @@ RESTORE_INTENT_CRC_OFFSET = 48
 RESTORE_SOURCE_ADJUST_OFFSET = 52
 RESTORE_STAGED_CRC_OFFSET = 56
 _ATTEMPT_TIMESTAMP = re.compile(r"\A\d{8}T\d{6}Z\Z")
-_PATCH_STATE_KEYS = {
+_PATCH_STATE_KEYS_V1 = {
   "schema",
   "workflow",
   "attempt",
@@ -61,7 +61,8 @@ _PATCH_STATE_KEYS = {
   "transitions",
   "validation_errors",
 }
-_RESTORE_STATE_KEYS = {
+_PATCH_STATE_KEYS_V2 = _PATCH_STATE_KEYS_V1 | {"power_cycle"}
+_RESTORE_STATE_KEYS_V1 = {
   "schema",
   "workflow",
   "attempt",
@@ -81,6 +82,7 @@ _RESTORE_STATE_KEYS = {
   "transitions",
   "validation_errors",
 }
+_RESTORE_STATE_KEYS_V2 = _RESTORE_STATE_KEYS_V1 | {"power_cycle"}
 _PATCH_ORDERS: dict[str, tuple[tuple[str, ...], ...]] = {
   "STARTED": ((),),
   "PROBED": ((),),
@@ -114,6 +116,11 @@ _PATCH_NEXT = {
 _PATCH_FAILURE_STATES = {
   "FAILED", "TARGET_INDETERMINATE", "CRC_INDETERMINATE", "RECOVERY_REQUIRED",
 }
+_PATCH_RESUME_NEXT = {
+  "PROBED": "TARGET_PRECHECKED",
+  "TARGET_COMMITTED": "CRC_PRECHECKED",
+  "CRC_COMMITTED": "VERIFY_PENDING",
+}
 
 
 class RestoreError(RuntimeError):
@@ -133,6 +140,13 @@ class RestoreState(str, Enum):
   FAILED = "FAILED"
   INDETERMINATE = "INDETERMINATE"
   PASS = "PASS"
+
+
+class _PlannedPowerCycle(Exception):
+  def __init__(self, path: Path, checkpoint: PowerCycleCheckpoint) -> None:
+    super().__init__(checkpoint.completed_state)
+    self.path = path
+    self.checkpoint = checkpoint
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,12 +185,20 @@ class LiveReadClassification:
 
 
 class _StateRecorder:
-  def __init__(self, directory: Path, *, timestamp: str, plan: RestorePlan) -> None:
+  def __init__(
+    self,
+    directory: Path,
+    *,
+    timestamp: str,
+    plan: RestorePlan,
+    transitions: list[dict[str, object]] | None = None,
+    completed: list[int] | None = None,
+  ) -> None:
     self.path = directory / "state.json"
     self.timestamp = timestamp
     self.plan = plan
-    self.transitions: list[dict[str, object]] = []
-    self.completed: list[int] = []
+    self.transitions = list(transitions or [])
+    self.completed = list(completed or [])
 
   def record(
     self,
@@ -184,6 +206,7 @@ class _StateRecorder:
     *,
     evidence: dict[str, object] | None = None,
     error: str | None = None,
+    power_cycle: PowerCycleCheckpoint | None = None,
   ) -> Path:
     transition: dict[str, object] = {
       "sequence": len(self.transitions),
@@ -196,7 +219,7 @@ class _StateRecorder:
     self.transitions.append(transition)
     try:
       report: dict[str, object] = {
-        "schema": 1,
+        "schema": 2,
         "workflow": "restore",
         "attempt": self.timestamp,
         "sequence": transition["sequence"],
@@ -212,6 +235,7 @@ class _StateRecorder:
         "probe_report_sha256": self.plan.probe_report_sha256,
         "automatic_retry": False,
         "external_recovery_required": state is RestoreState.INDETERMINATE,
+        "power_cycle": None if power_cycle is None else power_cycle.as_dict(),
         "transitions": self.transitions,
         "validation_errors": [] if error is None else [error],
       }
@@ -359,7 +383,7 @@ def _run_restore_locked(
   target: TargetManifest = TARGET,
   new_uds: bool,
 ) -> Path:
-  """Restore the persisted minimum safe sector set once, never automatically retrying."""
+  """Run one safe restore stage or persist one planned restart boundary."""
   _validate_inputs(
     layout=layout,
     preflight=preflight,
@@ -370,7 +394,7 @@ def _run_restore_locked(
     new_uds=new_uds,
   )
   plan = select_restore_plan(layout)
-  _reject_prior_restore(layout, plan)
+  resume = _select_restore_resume(layout, plan)
   try:
     trusted = load_probe_pass(layout, target)
   except EvidenceError as exc:
@@ -390,29 +414,47 @@ def _run_restore_locked(
     _build_restore_payload(restore_template, backup, target)
     for backup in backups
   )
-
-  preflight()
-  timestamp, directory = _create_attempt(layout)
-  recorder = _StateRecorder(directory, timestamp=timestamp, plan=plan)
-  recorder.record(
-    RestoreState.STARTED,
-    evidence={
-      "incident_state": str(plan.incident_state_path),
-      "incident_state_sha256": plan.incident_state_sha256,
-      "restore_order": list(plan.restore_order),
-    },
+  backup_by_label = {backup.label: backup for backup in backups}
+  image_by_label = {
+    backup.label: image
+    for backup, image in zip(backups, restore_images, strict=True)
+  }
+  if resume is None:
+    preflight()
+    timestamp, directory = _create_attempt(layout)
+    recorder = _StateRecorder(directory, timestamp=timestamp, plan=plan)
+    recorder.record(
+      RestoreState.STARTED,
+      evidence={
+        "incident_state": str(plan.incident_state_path),
+        "incident_state_sha256": plan.incident_state_sha256,
+        "restore_order": list(plan.restore_order),
+      },
+    )
+    entry = RestoreState.STARTED
+  else:
+    state, directory = resume
+    timestamp = directory.name
+    completed = [int(value, 16) for value in state["completed_sector_bases"]]
+    recorder = _StateRecorder(
+      directory,
+      timestamp=timestamp,
+      plan=plan,
+      transitions=state["transitions"],
+      completed=completed,
+    )
+    entry = RestoreState(state["result"])
+  armed = any(
+    transition["result"].endswith("_ARMED")
+    for transition in recorder.transitions
   )
-  armed = False
-  previous_label: str | None = None
+  planned: _PlannedPowerCycle | None = None
   try:
-    for backup, image in zip(backups, restore_images, strict=True):
-      label = backup.label.upper()
-      if previous_label is not None:
-        request_power_cycle(
-          f"{previous_label}_COMMITTED",
-          f"{label}_ECHO_PENDING",
-          power_cycle_checkpoint,
-        )
+    if resume is not None:
+      preflight()
+    if entry is RestoreState.STARTED or entry is RestoreState.CRC_COMMITTED:
+      label_name = plan.restore_order[0] if entry is RestoreState.STARTED else "target"
+      backup = backup_by_label[label_name]
       with transport_factory() as transport:
         echo_identity = transport.read_bootloader_identity()
         _require_boot_identity(echo_identity, trusted.identity)
@@ -427,7 +469,14 @@ def _run_restore_locked(
         RestoreState.CRC_ECHO_VERIFIED
         if backup.label == "crc" else RestoreState.TARGET_ECHO_VERIFIED
       )
-      recorder.record(
+      checkpoint = PowerCycleCheckpoint(
+        echo_state.value,
+        (
+          RestoreState.CRC_LIVE_PRECHECKED.value
+          if backup.label == "crc" else RestoreState.TARGET_LIVE_PRECHECKED.value
+        ),
+      )
+      path = recorder.record(
         echo_state,
         evidence={
           "identity": _boot_identity_record(echo_identity),
@@ -435,16 +484,16 @@ def _run_restore_locked(
           "backup_sha256": backup.sha256,
           "ram_echo_payload": _payload_record(ram_echo),
         },
+        power_cycle=checkpoint,
       )
+      raise _PlannedPowerCycle(path, checkpoint)
 
+    if entry in (RestoreState.CRC_ECHO_VERIFIED, RestoreState.TARGET_ECHO_VERIFIED):
+      label_name = "crc" if entry is RestoreState.CRC_ECHO_VERIFIED else "target"
+      backup = backup_by_label[label_name]
       live_precheck_state = (
         RestoreState.CRC_LIVE_PRECHECKED
         if backup.label == "crc" else RestoreState.TARGET_LIVE_PRECHECKED
-      )
-      request_power_cycle(
-        echo_state.value,
-        live_precheck_state.value,
-        power_cycle_checkpoint,
       )
       with transport_factory() as transport:
         live_identity = transport.read_bootloader_identity()
@@ -461,73 +510,89 @@ def _run_restore_locked(
         completed=tuple(recorder.completed),
         target=target,
       )
-      recorder.record(
+      arm_state = (
+        RestoreState.CRC_ARMED
+        if backup.label == "crc" else RestoreState.TARGET_ARMED
+      )
+      checkpoint = PowerCycleCheckpoint(live_precheck_state.value, arm_state.value)
+      path = recorder.record(
         live_precheck_state,
         evidence={
           "identity": _boot_identity_record(live_identity),
           "payload": _payload_record(live_read),
           "live_sectors": live_classification.as_evidence(),
         },
+        power_cycle=checkpoint,
       )
+      raise _PlannedPowerCycle(path, checkpoint)
 
-      arm_state = (
-        RestoreState.CRC_ARMED
-        if backup.label == "crc" else RestoreState.TARGET_ARMED
+    if entry not in (RestoreState.CRC_LIVE_PRECHECKED, RestoreState.TARGET_LIVE_PRECHECKED):
+      raise RestoreError("restore state is not restart-resumable")
+    label_name = "crc" if entry is RestoreState.CRC_LIVE_PRECHECKED else "target"
+    backup = backup_by_label[label_name]
+    image = image_by_label[label_name]
+    arm_state = (
+      RestoreState.CRC_ARMED
+      if backup.label == "crc" else RestoreState.TARGET_ARMED
+    )
+    with transport_factory() as transport:
+      writer_identity = transport.read_bootloader_identity()
+      _require_boot_identity(writer_identity, trusted.identity)
+      prompt = _restore_prompt(
+        backup=backup,
+        incident_sha256=plan.incident_state_sha256,
+        envelope_sha256=image.sha256,
+        target=target,
       )
-      request_power_cycle(
-        live_precheck_state.value,
-        arm_state.value,
-        power_cycle_checkpoint,
+      exact_confirmation = _require_exact_confirmation(confirmation, prompt)
+      recorder.record(
+        arm_state,
+        evidence={
+          "identity": _boot_identity_record(writer_identity),
+          "confirmation": exact_confirmation,
+          "operation": OP_RESTORE_SECTOR,
+          "sector_base": f"0x{backup.base:x}",
+          "backup_sha256": backup.sha256,
+          "payload": _restore_payload_record(image),
+        },
       )
-      with transport_factory() as transport:
-        writer_identity = transport.read_bootloader_identity()
-        _require_boot_identity(writer_identity, trusted.identity)
-        prompt = _restore_prompt(
-          backup=backup,
-          incident_sha256=plan.incident_state_sha256,
-          envelope_sha256=image.sha256,
-          target=target,
-        )
-        exact_confirmation = _require_exact_confirmation(confirmation, prompt)
-        recorder.record(
-          arm_state,
-          evidence={
-            "identity": _boot_identity_record(writer_identity),
-            "confirmation": exact_confirmation,
-            "operation": OP_RESTORE_SECTOR,
-            "sector_base": f"0x{backup.base:x}",
-            "backup_sha256": backup.sha256,
-            "payload": _restore_payload_record(image),
-          },
-        )
-        armed = True
-        restore_result = transport.run_staged_payload(
-          image,
-          ram_blob=RamBlob(target.sram_buffer, backup.data),
-          operation=OP_RESTORE_SECTOR,
-          new_uds=new_uds,
-        )
-      _validate_restore_result(restore_result, backup, target)
-      returned_path = directory / f"returned-sector-0x{backup.base:x}.bin"
-      _persist_sector(returned_path, restore_result.sector, target)
-      recorder.completed.append(backup.base)
-      committed_state = (
-        RestoreState.CRC_COMMITTED
-        if backup.label == "crc" else RestoreState.TARGET_COMMITTED
+      armed = True
+      restore_result = transport.run_staged_payload(
+        image,
+        ram_blob=RamBlob(target.sram_buffer, backup.data),
+        operation=OP_RESTORE_SECTOR,
+        new_uds=new_uds,
       )
-      try:
-        recorder.record(
-          committed_state,
-          evidence={
-            "returned_file": returned_path.name,
-            "returned_sha256": sha256_bytes(restore_result.sector),
-            "statuses": _status_records(restore_result),
-          },
-        )
-      except BaseException:
-        recorder.completed.pop()
-        raise
-      previous_label = label
+    _validate_restore_result(restore_result, backup, target)
+    returned_path = directory / f"returned-sector-0x{backup.base:x}.bin"
+    _persist_sector(returned_path, restore_result.sector, target)
+    recorder.completed.append(backup.base)
+    committed_state = (
+      RestoreState.CRC_COMMITTED
+      if backup.label == "crc" else RestoreState.TARGET_COMMITTED
+    )
+    more_sectors = len(recorder.completed) < len(backups)
+    checkpoint = (
+      PowerCycleCheckpoint(
+        committed_state.value, RestoreState.TARGET_ECHO_VERIFIED.value,
+      )
+      if more_sectors else None
+    )
+    try:
+      state_path = recorder.record(
+        committed_state,
+        evidence={
+          "returned_file": returned_path.name,
+          "returned_sha256": sha256_bytes(restore_result.sector),
+          "statuses": _status_records(restore_result),
+        },
+        power_cycle=checkpoint,
+      )
+    except BaseException:
+      recorder.completed.pop()
+      raise
+    if checkpoint is not None:
+      raise _PlannedPowerCycle(state_path, checkpoint)
 
     report = {
       "schema": 1,
@@ -541,12 +606,12 @@ def _run_restore_locked(
       "restore_order": list(plan.restore_order),
       "sectors": [
         {
-          "base": f"0x{backup.base:x}",
-          "length": len(backup.data),
-          "sha256": backup.sha256,
-          "returned_file": f"returned-sector-0x{backup.base:x}.bin",
+          "base": f"0x{item.base:x}",
+          "length": len(item.data),
+          "sha256": item.sha256,
+          "returned_file": f"returned-sector-0x{item.base:x}.bin",
         }
-        for backup in backups
+        for item in backups
       ],
       "automatic_retry": False,
       "validation_errors": [],
@@ -558,6 +623,8 @@ def _run_restore_locked(
       evidence={"restore_report_sha256": sha256_bytes(report_path.read_bytes())},
     )
     return report_path
+  except _PlannedPowerCycle as exc:
+    planned = exc
   except BaseException as exc:
     failure_state = RestoreState.INDETERMINATE if armed else RestoreState.FAILED
     detail = f"{type(exc).__name__}: {exc}"
@@ -573,6 +640,14 @@ def _run_restore_locked(
         f"or professional recovery is required: {exc}"
       ) from exc
     raise RestoreError(f"restore stopped before any writer was armed: {exc}") from exc
+  if planned is None:
+    raise RestoreError("restore did not produce a report or planned checkpoint")
+  request_power_cycle(
+    planned.checkpoint.completed_state,
+    planned.checkpoint.next_state,
+    power_cycle_checkpoint,
+  )
+  return planned.path
 
 
 def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], bytes]:
@@ -583,11 +658,18 @@ def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], by
     value = json.loads(raw.decode("utf-8"))
   except (OSError, UnicodeError, json.JSONDecodeError) as exc:
     raise RestoreError("patch state is not readable UTF-8 JSON") from exc
-  if type(value) is not dict or set(value) != _PATCH_STATE_KEYS:
-    raise RestoreError("patch state does not have the exact canonical schema")
   if (
-    type(value["schema"]) is not int
-    or value["schema"] != 1
+    type(value) is not dict
+    or set(value) not in (_PATCH_STATE_KEYS_V1, _PATCH_STATE_KEYS_V2)
+  ):
+    raise RestoreError("patch state does not have the exact canonical schema")
+  schema = value["schema"]
+  power_cycle = value.get("power_cycle")
+  if (
+    type(schema) is not int
+    or schema not in (1, 2)
+    or (schema == 1 and set(value) != _PATCH_STATE_KEYS_V1)
+    or (schema == 2 and set(value) != _PATCH_STATE_KEYS_V2)
     or value["workflow"] != "patch"
     or value["attempt"] != timestamp
     or type(value["sequence"]) is not int
@@ -605,6 +687,20 @@ def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], by
     or value["validation_errors"]
   ):
     raise RestoreError("patch state fields are malformed or contradictory")
+  expected_resume = _PATCH_RESUME_NEXT.get(value["result"])
+  if schema == 2 and (power_cycle is None) != (expected_resume is None):
+    raise RestoreError("patch power-cycle checkpoint is missing or unexpected")
+  if power_cycle is not None:
+    try:
+      checkpoint = PowerCycleCheckpoint.from_dict(power_cycle)
+    except ValueError as exc:
+      raise RestoreError("patch power-cycle checkpoint is malformed or unsafe") from exc
+    if (
+      schema != 2
+      or checkpoint.completed_state != value["result"]
+      or expected_resume != checkpoint.next_state
+    ):
+      raise RestoreError("patch power-cycle checkpoint is malformed or unsafe")
   transitions = value["transitions"]
   if type(transitions) is not list or len(transitions) != value["sequence"] + 1:
     raise RestoreError("patch state transition history is incomplete")
@@ -685,16 +781,67 @@ def _reject_prior_restore(
       )
     if state["result"] == RestoreState.FAILED.value:
       continue
-    if state["incident_state_sha256"] == plan.incident_state_sha256:
+    if state["incident_timestamp"] == plan.incident_timestamp:
       if state["result"] == RestoreState.PASS.value:
         if allow_selected_pass:
           selected_pass = True
           continue
         raise RestoreError("the selected patch incident already has a PASS restore")
+      if state["incident_state_sha256"] != plan.incident_state_sha256:
+        raise RestoreError("selected patch incident changed after restore started")
       raise RestoreError("an already-running restore exists for the selected incident")
     if state["result"] != RestoreState.PASS.value:
       raise RestoreError("an already-running restore exists for a different incident")
   return selected_pass if allow_selected_pass else None
+
+
+def _select_restore_resume(
+  layout: ArtifactLayout,
+  plan: RestorePlan,
+) -> tuple[dict[str, object], Path] | None:
+  """Select one exact planned restore checkpoint without relaxing one-shot guards."""
+  try:
+    entries = list(layout.restore_root.iterdir())
+  except FileNotFoundError:
+    return None
+  except OSError as exc:
+    raise RestoreError("cannot inspect prior restore attempts") from exc
+  resumable: list[tuple[dict[str, object], Path]] = []
+  for directory in sorted(entries, key=lambda path: path.name, reverse=True):
+    if (
+      _ATTEMPT_TIMESTAMP.fullmatch(directory.name) is None
+      or not directory.is_dir()
+      or directory.is_symlink()
+    ):
+      raise RestoreError("prior restore layout contains an invalid attempt entry")
+    state_path = directory / "state.json"
+    if state_path.is_symlink() or not state_path.is_file():
+      raise RestoreError("an already-running restore attempt has no terminal state")
+    try:
+      state = _load_restore_state(state_path, directory.name)
+    except RestoreError as exc:
+      raise RestoreError("an already-running restore attempt has malformed state") from exc
+    if state["result"] == RestoreState.INDETERMINATE.value:
+      raise RestoreError(
+        "a prior restore is INDETERMINATE; external programming or professional "
+        "recovery is required"
+      )
+    if state["result"] == RestoreState.FAILED.value:
+      continue
+    if state["incident_timestamp"] == plan.incident_timestamp:
+      if state["result"] == RestoreState.PASS.value:
+        raise RestoreError("the selected patch incident already has a PASS restore")
+      if state["incident_state_sha256"] != plan.incident_state_sha256:
+        raise RestoreError("selected patch incident changed after restore started")
+      if state["schema"] == 2 and state["power_cycle"] is not None:
+        resumable.append((state, directory))
+        continue
+      raise RestoreError("an already-running restore exists for the selected incident")
+    if state["result"] != RestoreState.PASS.value:
+      raise RestoreError("an already-running restore exists for a different incident")
+  if len(resumable) > 1:
+    raise RestoreError("multiple resumable restore attempts exist")
+  return resumable[0] if resumable else None
 
 
 def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
@@ -702,8 +849,13 @@ def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
     state = json.loads(path.read_text(encoding="utf-8"))
   except (OSError, UnicodeError, json.JSONDecodeError) as exc:
     raise RestoreError("restore state is not readable UTF-8 JSON") from exc
-  if type(state) is not dict or set(state) != _RESTORE_STATE_KEYS:
+  if (
+    type(state) is not dict
+    or set(state) not in (_RESTORE_STATE_KEYS_V1, _RESTORE_STATE_KEYS_V2)
+  ):
     raise RestoreError("restore state does not have the exact canonical schema")
+  schema = state["schema"]
+  power_cycle = state.get("power_cycle")
   order = state["restore_order"]
   if type(order) is not list or tuple(order) not in (
     ("target",), ("crc", "target"),
@@ -717,8 +869,10 @@ def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
   result = state["result"]
   known_results = {item.value for item in RestoreState}
   if (
-    type(state["schema"]) is not int
-    or state["schema"] != 1
+    type(schema) is not int
+    or schema not in (1, 2)
+    or (schema == 1 and set(state) != _RESTORE_STATE_KEYS_V1)
+    or (schema == 2 and set(state) != _RESTORE_STATE_KEYS_V2)
     or state["workflow"] != "restore"
     or state["attempt"] != timestamp
     or type(state["sequence"]) is not int
@@ -741,6 +895,27 @@ def _load_restore_state(path: Path, timestamp: str) -> dict[str, object]:
     or type(state["validation_errors"]) is not list
   ):
     raise RestoreError("restore state fields are malformed or contradictory")
+  expected_next: str | None = None
+  if result.endswith("_ECHO_VERIFIED"):
+    expected_next = result.removesuffix("_ECHO_VERIFIED") + "_LIVE_PRECHECKED"
+  elif result.endswith("_LIVE_PRECHECKED"):
+    expected_next = result.removesuffix("_LIVE_PRECHECKED") + "_ARMED"
+  elif result == RestoreState.CRC_COMMITTED.value and tuple(order) == ("crc", "target"):
+    expected_next = RestoreState.TARGET_ECHO_VERIFIED.value
+  if schema == 2 and (power_cycle is None) != (expected_next is None):
+    raise RestoreError("restore power-cycle checkpoint is missing or unexpected")
+  if power_cycle is not None:
+    try:
+      checkpoint = PowerCycleCheckpoint.from_dict(power_cycle)
+    except ValueError as exc:
+      raise RestoreError("restore power-cycle checkpoint is malformed or unsafe") from exc
+    if (
+      schema != 2
+      or expected_next is None
+      or checkpoint.completed_state != result
+      or checkpoint.next_state != expected_next
+    ):
+      raise RestoreError("restore power-cycle checkpoint is malformed or unsafe")
   transitions = state["transitions"]
   if type(transitions) is not list or len(transitions) != state["sequence"] + 1:
     raise RestoreError("restore state transition history is incomplete")
@@ -1099,7 +1274,7 @@ def _validate_live_precheck(
   ):
     allowed = ({"source", "candidate", "other"}, {"source"})
   elif (
-    plan.incident_result == "RECOVERY_REQUIRED"
+    plan.incident_result in {"TARGET_COMMITTED", "RECOVERY_REQUIRED"}
     and plan.restore_order == ("target",)
   ):
     allowed = ({"candidate"}, {"source"})
@@ -1109,7 +1284,7 @@ def _validate_live_precheck(
   ):
     allowed = ({"candidate"}, {"source", "candidate", "other"})
   elif (
-    plan.incident_result == "RECOVERY_REQUIRED"
+    plan.incident_result in {"CRC_COMMITTED", "RECOVERY_REQUIRED"}
     and plan.restore_order == ("crc", "target")
   ):
     allowed = ({"candidate"}, {"candidate"})

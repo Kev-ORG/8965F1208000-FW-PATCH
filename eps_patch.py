@@ -138,7 +138,7 @@ def main() -> int:
       preflight=run_preflight,
       transport_factory=lambda: EcuTransport(serial=args.serial),
       confirmation=input,
-      power_cycle_checkpoint=input,
+      power_cycle_checkpoint=print,
     )
   except _EXPECTED_ERRORS as exc:
     print(f"ERROR: {exc}", file=sys.stderr)
