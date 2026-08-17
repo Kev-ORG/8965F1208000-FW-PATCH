@@ -138,7 +138,7 @@ python3.12 eps_patch.py patch
 
 Patch automatically loads the fixed trusted probe directory. It accepts no report, backup, sector, incident, payload, or artifact path. The intended direction is fixed: target sector (`0x60000`) first, then the CRC sector (`0xf8000`).
 
-Each invocation opens one Panda/UDS connection and executes at most one ECU payload. After a completed stage, the program atomically persists the exact next checkpoint, prints a prominent complete-power-cycle instruction, and exits normally. Because comma is powered by the vehicle, its SSH connection also disappears during the cycle. Do not wait in the dead terminal and do not try to continue that process.
+Each hardware-bearing invocation opens at most one Panda/UDS connection and executes at most one ECU payload. The initial attempt-binding invocation performs preflight but opens no transport. After a completed stage, the program atomically persists the exact next checkpoint, prints a prominent complete-power-cycle instruction, and exits normally. Because comma is powered by the vehicle, its SSH connection also disappears during the cycle. Do not wait in the dead terminal and do not try to continue that process.
 
 For every requested cycle:
 
@@ -154,7 +154,7 @@ A UDS reset is not a substitute for the complete power cycle. The script trusts 
 
 The normal patch sequence has five planned boundaries:
 
-| Completed stage | Next stage after power cycle | Operation just completed |
+| Persisted completed stage | Named next stage after power cycle | What the next invocation performs |
 |---|---|---|
 | `PROBED` | `TARGET_PRECHECKED` | Read-only target CRC/DCRA precheck |
 | `TARGET_PRECHECKED` | `TARGET_ARMED` | Target writer becomes eligible on the next invocation |
@@ -185,17 +185,29 @@ After `YES`, do not infer progress from terminal activity. Wait for the command 
 | planned checkpoint | The named stage completed and the next stage is persisted | Complete the requested power cycle, reconnect SSH, rerun the same `patch` command |
 | `PASS` | Both candidate sectors were independently read back and CRC/DCRA validation passed | Preserve the complete artifact tree; continue only with stationary functional compatibility tests |
 | `TARGET_INDETERMINATE` | Target writer was triggered but a complete valid result/readback was not received | Do not patch again; run `restore` only through the persisted incident workflow |
-| `CRC_INDETERMINATE` | CRC writer was triggered but a complete valid result/readback was not received | Do not infer success from DTCs; only the exact audited reconciliation described below may run, otherwise restore |
+| `CRC_INDETERMINATE` | CRC writer was triggered but a complete valid result/readback was not received | Do not infer success from DTCs; an ordinary first occurrence gets one read-only classification, while later occurrences are restore-only unless they match the separate exact legacy exception |
 | `RECOVERY_REQUIRED` | The attempt cannot safely continue as a patch | Stop patching and run the bound restore workflow |
 | partial/unknown live state | Live Flash matches neither the complete reviewed source nor candidate classification | Stop all writers; preserve evidence and use external programmer or professional recovery |
 
 PASS is a Flash-level result. It does not, by itself, prove that the EPS RX SecOC behavior is functionally bypassed; that requires a later stationary bench test with the complete system.
 
-### 1.8 The narrow audited CRC reconciliation
+### 1.8 CRC writer response is indeterminate
 
 UDS `7F 31 78` means RoutineControl Response Pending. On ISO-TP, a raw frame may begin with `0x03` because that byte is the single-frame payload length. Neither that response nor a timeout, NRC `0x31`, or broken payload stream proves whether CRC Flash changed.
 
-The repository contains one narrow, history-bound exception for the already audited incident shape: exactly two earlier `CRC_INDETERMINATE` transitions ending in NRC `0x31` with raw frame `037f313100000000`. It is not a general retry mechanism.
+#### Ordinary first indeterminate outcome
+
+An ordinary first `CRC_INDETERMINATE` is eligible for one-time read-only reconciliation. After the requested complete power cycle, reconnect SSH and rerun `python3.12 eps_patch.py patch`. That invocation runs only the reviewed `live_read` payload: no FACI P/E, no writer arm, and no `YES` prompt. It reads both entire 32 KiB sectors and validates the exact identity, history, source/candidate digests, payload, and byte-for-byte classifications.
+
+- If target equals the complete candidate and CRC equals the complete source, the program persists `CRC_PRECHECKED`. Complete the requested cycle, rerun `patch`, review `WRITE-CRC`, and decide whether to authorize that one new writer with exact uppercase `YES`.
+- If target and CRC both equal their complete candidates, the program persists `CRC_COMMITTED`. It skips the writer; complete the requested cycle and rerun `patch` for final read-only verification.
+- If either sector is partial/unknown, the identity/history/evidence is not exact, or live read is incomplete, the reconciliation fails without arming a writer. Preserve the incident and use restore or external recovery as directed.
+
+A second ordinary `CRC_INDETERMINATE` is restore-only. It cannot receive another general reconciliation or writer retry.
+
+#### Separate legacy exception
+
+The separate legacy exception applies only to the already audited incident shape: exactly two earlier `CRC_INDETERMINATE` transitions ending in NRC `0x31` with raw frame `037f313100000000`, including the reviewed first reconciliation and writer evidence. It is not a general retry mechanism and a semantic near miss is rejected before hardware.
 
 After a complete power cycle, reconnect SSH and rerun:
 
@@ -203,7 +215,7 @@ After a complete power cycle, reconnect SSH and rerun:
 python3.12 eps_patch.py patch
 ```
 
-The eligible invocation runs only the reviewed read-only `live_read` payload, reads both entire 32 KiB sectors, and compares every byte with the bound source/candidate values:
+For that exact legacy history, the eligible invocation runs only the reviewed read-only `live_read` payload, reads both entire 32 KiB sectors, and compares every byte with the bound source/candidate values:
 
 - If it persists `CRC_PRECHECKED`, target equals the complete candidate and CRC equals the complete source. Perform the requested power cycle, rerun `patch`, review `WRITE-CRC`, and authorize the one permitted CRC writer with a new exact `YES`.
 - If it persists `CRC_COMMITTED`, both sectors already equal the complete candidates. No CRC writer runs. Perform the requested power cycle and rerun `patch` for final read-only verification.
@@ -409,11 +421,11 @@ Do not run patch again. Preserve the incident and run `python3.12 eps_patch.py r
 
 ### Q10. What should I do after `CRC_INDETERMINATE`?
 
-Do not assume whether CRC changed. Complete the requested power cycle. Only an exact audited incident may receive the one read-only classification described in chapter 1. Every other case is restore-only or external recovery.
+Do not assume whether CRC changed. Complete the requested power cycle. The ordinary first occurrence receives one read-only two-sector classification; source may permit one newly confirmed writer, candidate skips the writer, and partial/unknown stops. A second ordinary occurrence is restore-only unless the complete history matches the separate legacy exception.
 
-### Q11. Why is one historical CRC reconciliation allowed but not a general retry?
+### Q11. Why are the ordinary reconciliation and one historical exception not general retries?
 
-It is bound to an exact reviewed history, identity, four source/candidate digests, two complete live-read records, and a one-time transition. The live read—not the NRC—decides whether to skip the writer, permit one new human-authorized writer, or stop. A semantic near miss fails closed.
+The ordinary path is limited to the first indeterminate outcome and one read-only classification. The legacy path additionally requires an exact reviewed history, identity, four source/candidate digests, both complete live-read records, and reconstructed writer evidence. In both paths, live Flash—not the NRC—decides whether to skip a writer, allow a newly human-authorized writer, or stop; every semantic near miss fails closed.
 
 ### Q12. Can I edit or replace `state.json` to continue?
 
@@ -591,7 +603,7 @@ python3.12 eps_patch.py patch
 
 Patch 自动加载固定的可信 probe 目录，不接受报告、备份、扇区、incident、payload 或产物路径。方向固定为先写 target 扇区（`0x60000`），再写 CRC 扇区（`0xf8000`）。
 
-每次运行只打开一个 Panda/UDS 连接，最多执行一个 ECU payload。阶段完成后，程序会原子保存准确的下一 checkpoint，显示醒目的完整断电提示，然后正常退出。由于 comma 由车辆供电，断电时 SSH 也必然断开。不要在已经断开的终端里等待，也不要试图继续旧进程。
+每次包含硬件操作的运行最多只打开一个 Panda/UDS 连接，并最多执行一个 ECU payload。初次绑定 attempt 的运行只做 preflight，不打开 transport。阶段完成后，程序会原子保存准确的下一 checkpoint，显示醒目的完整断电提示，然后正常退出。由于 comma 由车辆供电，断电时 SSH 也必然断开。不要在已经断开的终端里等待，也不要试图继续旧进程。
 
 每次收到断电提示后都这样操作：
 
@@ -607,7 +619,7 @@ UDS reset 不能代替完整断电。脚本相信人类已经完成断电，只�
 
 正常 patch 有五个计划性边界：
 
-| 已完成阶段 | 断电重启后的下一阶段 | 刚完成的操作 |
+| 已持久化完成阶段 | 断电重启后的指定下一阶段 | 下一次运行执行的操作 |
 |---|---|---|
 | `PROBED` | `TARGET_PRECHECKED` | 只读 target CRC/DCRA 预检 |
 | `TARGET_PRECHECKED` | `TARGET_ARMED` | 下一次运行可以进入 target writer |
@@ -638,17 +650,29 @@ YES
 | 计划 checkpoint | 指定阶段完成，下一阶段已保存 | 完成提示的断电重启，重新连接 SSH，再运行同一条 `patch` 命令 |
 | `PASS` | 两个 candidate 扇区都完成独立回读，并通过 CRC/DCRA | 保留完整 artifact 树；之后只做静止台架功能兼容性验证 |
 | `TARGET_INDETERMINATE` | target writer 已触发，但没有收到完整有效结果/回读 | 不要再次 patch；只通过已保存 incident 运行 `restore` |
-| `CRC_INDETERMINATE` | CRC writer 已触发，但没有收到完整有效结果/回读 | 不要用 DTC 推断；只有下述精确审计过的只读判定可以运行，否则 restore |
+| `CRC_INDETERMINATE` | CRC writer 已触发，但没有收到完整有效结果/回读 | 不要用 DTC 推断；普通第一次允许一次只读分类，之后只能 restore，除非精确匹配独立的历史遗留例外 |
 | `RECOVERY_REQUIRED` | 当前 attempt 不能作为 patch 安全继续 | 停止 patch，运行绑定的 restore 流程 |
 | partial/unknown live state | 当前 Flash 不等于完整已审查 source 或 candidate | 停止所有 writer，保留证据，使用外部编程器或专业恢复 |
 
 PASS 是 Flash 级结果，并不单独证明 EPS 的 RX SecOC 功能已经绕过；还需要在完整系统的静止台架上进行后续验证。
 
-### 1.8 受限的 CRC 历史事故判定
+### 1.8 CRC writer 回传不确定
 
 UDS `7F 31 78` 表示 RoutineControl Response Pending。ISO-TP 单帧的开头 `0x03` 可能只是 payload 长度。这个响应、超时、NRC `0x31` 或损坏的 payload stream 都不能证明 CRC Flash 是否改变。
 
-仓库只包含一个狭窄、绑定历史的例外：已经审计过的事故必须精确包含两次较早的 `CRC_INDETERMINATE`，最后是 NRC `0x31` 且 raw frame 为 `037f313100000000`。这不是通用重试机制。
+#### 普通的第一次不确定结果
+
+普通的第一次 `CRC_INDETERMINATE` 可以进入一次性只读判定。完成提示的完整断电后，重新连接 SSH，重新运行 `python3.12 eps_patch.py patch`。这次运行只执行已审查 `live_read` payload：不进入 FACI P/E、不 arm writer、也不显示 `YES`。它会读取两个完整 32 KiB 扇区，并核对精确身份、历史、source/candidate 摘要、payload 和逐字节分类。
+
+- target 完整等于 candidate 且 CRC 完整等于 source：保存为 `CRC_PRECHECKED`。完成提示的断电，重新运行 `patch`，核对 `WRITE-CRC`，再决定是否用精确大写 `YES` 授权一次新的 writer。
+- target 与 CRC 都完整等于各自 candidate：保存为 `CRC_COMMITTED`，跳过 writer。完成提示的断电，再运行 `patch` 做最终只读验证。
+- 任一扇区为 partial/unknown、身份/历史/证据不精确，或 live read 不完整：只读判定失败且不 arm writer。保留 incident，按照程序指引 restore 或外部恢复。
+
+普通流程第二次出现 `CRC_INDETERMINATE` 后只能 restore。它不能再次获得通用只读判定或 writer 重试。
+
+#### 独立的历史遗留例外
+
+独立的历史遗留例外只适用于已经审计过的事故：历史必须精确包含两次较早的 `CRC_INDETERMINATE`，最后是 NRC `0x31` 且 raw frame 为 `037f313100000000`，并包含已审查的第一次判定与 writer 证据。这不是通用重试机制，任何语义近似都会在硬件前拒绝。
 
 完整断电后，重新连接 SSH，并再次运行：
 
@@ -656,7 +680,7 @@ UDS `7F 31 78` 表示 RoutineControl Response Pending。ISO-TP 单帧的开头 `
 python3.12 eps_patch.py patch
 ```
 
-符合条件的这次运行只执行已审查的只读 `live_read` payload，读取两个完整 32 KiB 扇区，逐字节与绑定的 source/candidate 比较：
+对于该精确历史，符合条件的这次运行只执行已审查的只读 `live_read` payload，读取两个完整 32 KiB 扇区，逐字节与绑定的 source/candidate 比较：
 
 - 如果保存为 `CRC_PRECHECKED`：target 完整等于 candidate，CRC 完整等于 source。按提示完整断电，再运行 `patch`，核对 `WRITE-CRC`，并用新的精确 `YES` 授权唯一允许的一次 CRC writer。
 - 如果保存为 `CRC_COMMITTED`：两个扇区都完整等于 candidate。不会再运行 CRC writer；按提示断电并再次运行 `patch`，完成最终只读验证。
@@ -862,11 +886,11 @@ docker run --rm \
 
 ### 问10：出现 `CRC_INDETERMINATE` 后怎么办？
 
-不要猜测 CRC 是否改变。完成提示的断电。只有精确审计过的 incident 可以进入第 1 章描述的单次只读分类；其他情况只能 restore 或外部恢复。
+不要猜测 CRC 是否改变。完成提示的断电。普通第一次会得到一次只读双扇区分类：source 可以允许一次新确认 writer，candidate 会跳过 writer，partial/unknown 会停止。普通第二次只能 restore，除非完整历史精确匹配独立的历史遗留例外。
 
-### 问11：为什么允许一个历史 CRC 判定，却不允许通用重试？
+### 问11：为什么普通判定和一个历史例外都不属于通用重试？
 
-它绑定精确审查历史、身份、四个 source/candidate 摘要、两个完整 live-read record 与一次性 transition。由 live read 而不是 NRC 决定跳过 writer、允许一次新人工授权 writer 或停止。任何语义近似但不完全一致都会 fail closed。
+普通路径仅限第一次不确定结果和一次只读分类；历史路径还要求精确审查历史、身份、四个 source/candidate 摘要、两个完整 live-read record 与重建的 writer 证据。两条路径都由 live Flash 而不是 NRC 决定跳过 writer、允许一次新人工授权 writer 或停止；任何语义近似都会 fail closed。
 
 ### 问12：能否编辑或替换 `state.json` 后继续？
 
