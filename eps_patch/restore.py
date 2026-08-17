@@ -696,6 +696,15 @@ def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], by
     for previous, current in zip(transitions, transitions[1:])
   ):
     raise RestoreError("patch state transition history is not reachable")
+  indeterminate_count = 0
+  for previous, current in zip(transitions, transitions[1:]):
+    if previous["result"] == "CRC_INDETERMINATE":
+      indeterminate_count += 1
+      if (
+        indeterminate_count != 1
+        and current["result"] in {"CRC_PRECHECKED", "CRC_COMMITTED"}
+      ):
+        raise RestoreError("patch state exceeds the one-time CRC retry limit")
   if (
     transitions[-1]["result"] != value["result"]
     or transitions[0]["recorded_at"] != value["created_at"]

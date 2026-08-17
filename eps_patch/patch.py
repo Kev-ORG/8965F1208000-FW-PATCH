@@ -825,15 +825,20 @@ def _select_patch_resume(
       state, _raw = _load_patch_state(directory / "state.json", directory.name)
     except RestoreError as exc:
       raise PatchError("cannot validate persisted patch attempt state") from exc
-    planned_resume = state["schema"] == 2 and state["power_cycle"] is not None
+    indeterminate_count = sum(
+      transition["result"] == PatchState.CRC_INDETERMINATE.value
+      for transition in state["transitions"]
+    )
+    planned_resume = (
+      state["schema"] == 2
+      and state["power_cycle"] is not None
+      and indeterminate_count <= 1
+    )
     indeterminate_resume = (
       state["schema"] == 2
       and state["result"] == PatchState.CRC_INDETERMINATE.value
       and state["power_cycle"] is None
-      and sum(
-        transition["result"] == PatchState.CRC_INDETERMINATE.value
-        for transition in state["transitions"]
-      ) == 1
+      and indeterminate_count == 1
     )
     if not planned_resume and not indeterminate_resume:
       continue

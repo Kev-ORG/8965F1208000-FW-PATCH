@@ -696,6 +696,36 @@ def test_second_indeterminate_crc_writer_blocks_every_future_hardware_call(tmp_p
     )
   assert blocked_events == []
 
+  forged = json.loads(state_path.read_text(encoding="utf-8"))
+  forged_transition = {
+    "sequence": len(forged["transitions"]),
+    "result": "CRC_PRECHECKED",
+    "recorded_at": forged["updated_at"],
+    "evidence": {"forged": "second-indeterminate recovery"},
+  }
+  forged["transitions"].append(forged_transition)
+  forged["sequence"] = forged_transition["sequence"]
+  forged["result"] = "CRC_PRECHECKED"
+  forged["restore_order"] = ["target"]
+  forged["updated_at"] = forged_transition["recorded_at"]
+  forged["power_cycle"] = {
+    "completed_state": "CRC_PRECHECKED",
+    "next_state": "CRC_ARMED",
+  }
+  state_path.write_text(json.dumps(forged), encoding="utf-8")
+  forged_events = []
+
+  with pytest.raises(PatchError, match=r"cannot (verify|validate) persisted patch"):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=lambda: forged_events.append("transport"),
+      events=forged_events,
+      confirmations=forged_events,
+      powers=forged_events,
+    )
+  assert forged_events == []
+
 
 def test_patch_rejects_unresolved_incident_before_preflight_or_transport(tmp_path):
   """A new patch must not obscure an incident whose restore scope is persisted."""
