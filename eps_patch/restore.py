@@ -224,6 +224,14 @@ class _StateRecorder:
 
 def select_restore_plan(layout: ArtifactLayout) -> RestorePlan:
   """Select the newest persisted patch incident that canonically needs restore."""
+  plans = _recoverable_restore_plans(layout)
+  if plans:
+    return plans[0]
+  raise RestoreError("no recoverable persisted patch incident exists")
+
+
+def _recoverable_restore_plans(layout: ArtifactLayout) -> tuple[RestorePlan, ...]:
+  """Return every recoverable persisted patch incident, newest first."""
   if not isinstance(layout, ArtifactLayout):
     raise TypeError("layout must be an ArtifactLayout")
   try:
@@ -232,6 +240,7 @@ def select_restore_plan(layout: ArtifactLayout) -> RestorePlan:
     entries = []
   except OSError as exc:
     raise RestoreError("cannot inspect persisted patch attempts") from exc
+  plans = []
   for directory in sorted(entries, key=lambda path: path.name, reverse=True):
     if (
       _ATTEMPT_TIMESTAMP.fullmatch(directory.name) is None
@@ -248,17 +257,19 @@ def select_restore_plan(layout: ArtifactLayout) -> RestorePlan:
       TARGET.crc_sector_base if name == "crc" else TARGET.sector_base
       for name in order
     )
-    return RestorePlan(
-      incident_directory=directory,
-      incident_state_path=state_path,
-      incident_timestamp=directory.name,
-      incident_result=state["result"],
-      restore_order=order,
-      sector_bases=bases,
-      incident_state_sha256=sha256_bytes(raw),
-      probe_report_sha256=state["probe_report_sha256"],
+    plans.append(
+      RestorePlan(
+        incident_directory=directory,
+        incident_state_path=state_path,
+        incident_timestamp=directory.name,
+        incident_result=state["result"],
+        restore_order=order,
+        sector_bases=bases,
+        incident_state_sha256=sha256_bytes(raw),
+        probe_report_sha256=state["probe_report_sha256"],
+      )
     )
-  raise RestoreError("no recoverable persisted patch incident exists")
+  return tuple(plans)
 
 
 def build_restore_intent(

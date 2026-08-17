@@ -421,3 +421,44 @@ def test_patch_allows_a_new_attempt_after_the_incident_restore_passes(tmp_path, 
     )
 
   assert events == ["preflight", "transport"]
+
+
+def test_patch_rejects_an_older_unresolved_incident_masked_by_a_newer_restore(
+  tmp_path,
+):
+  """Every recoverable incident needs its own successful restore before patching."""
+  import test_restore as restore_fx
+  from eps_patch.patch import PatchError, run_patch
+  from eps_patch.restore import select_restore_plan
+
+  layout, target, *_case = _probe_case(tmp_path)
+  restore_fx._patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+    timestamp="20260817T010203Z",
+  )
+  restore_fx._patch_state(
+    layout,
+    result="TARGET_INDETERMINATE",
+    restore_order=["target"],
+    timestamp="20260817T010204Z",
+  )
+  newer_incident = select_restore_plan(layout)
+  restore_fx._write_prior_restore_state(layout, newer_incident, result="PASS")
+  events = []
+
+  with pytest.raises(PatchError, match="unresolved patch incident"):
+    run_patch(
+      layout=layout,
+      payloads=_payloads(),
+      templates=_templates(),
+      preflight=lambda: events.append("preflight"),
+      transport_factory=lambda: events.append("transport"),
+      confirmation=lambda _prompt: "",
+      power_cycle_checkpoint=lambda _prompt: "",
+      target=target,
+      new_uds=False,
+    )
+
+  assert events == []

@@ -645,24 +645,27 @@ def _candidate_from_probe(
 
 
 def _reject_unresolved_patch_incident(layout: ArtifactLayout) -> None:
-  """Keep a recoverable failure as the sole permitted destructive workflow."""
-  from .restore import RestoreError, _reject_prior_restore, select_restore_plan
+  """Require a successful restore for every recoverable patch incident."""
+  from .restore import (
+    RestoreError,
+    _recoverable_restore_plans,
+    _reject_prior_restore,
+  )
 
   try:
-    incident = select_restore_plan(layout)
+    incidents = _recoverable_restore_plans(layout)
   except RestoreError as exc:
-    if str(exc) == "no recoverable persisted patch incident exists":
-      return
     raise PatchError("cannot verify persisted patch incident state") from exc
-  try:
-    if _reject_prior_restore(layout, incident, allow_selected_pass=True):
-      return
-  except RestoreError as exc:
-    raise PatchError("cannot verify persisted restore state") from exc
-  raise PatchError(
-    "unresolved patch incident requires restore before another patch "
-    f"({incident.incident_timestamp})"
-  )
+  for incident in incidents:
+    try:
+      if _reject_prior_restore(layout, incident, allow_selected_pass=True):
+        continue
+    except RestoreError as exc:
+      raise PatchError("cannot verify persisted restore state") from exc
+    raise PatchError(
+      "unresolved patch incident requires restore before another patch "
+      f"({incident.incident_timestamp})"
+    )
 
 
 def _require_application_identity(
