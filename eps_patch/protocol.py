@@ -602,17 +602,13 @@ class CrcStreamCollector:
     )
 
 
-def validate_crc_intermediate(
-  result: StreamResult, *, staged_candidate: bytes,
-) -> CrcObservation:
+def validate_crc_intermediate(result: StreamResult) -> CrcObservation:
   """Validate every semantic claim in one complete intermediate-state result."""
   if (
     type(result) is not StreamResult or type(result.operation) is not int
     or result.operation != OP_CRC_INTERMEDIATE
   ):
     raise ProtocolError("intermediate result has the wrong operation")
-  if type(staged_candidate) is not bytes or len(staged_candidate) != TARGET.sector_length:
-    raise ProtocolError("intermediate staged candidate must be one immutable sector")
   if (
     result.magic_words != (TARGET.magic_word, TARGET.magic_word)
     or result.statuses != ((1, 0),)
@@ -633,9 +629,6 @@ def validate_crc_intermediate(
     or crc_sector[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4]
       != bytes.fromhex("7f886209")
     or crc_sector[0x7E00:0x7E04] != TARGET.magic_word.to_bytes(4, "little")
-    or staged_candidate[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4]
-      != bytes.fromhex("cc474f41")
-    or staged_candidate[0x7E00:0x7E04] != TARGET.magic_word.to_bytes(4, "little")
   ):
     raise ProtocolError("intermediate live or staged sector context is invalid")
 
@@ -666,8 +659,7 @@ def validate_crc_intermediate(
     or crc.patched_dcra_raw != 0xFFFFFFFF
     or crc.exit_ctl != crc.entry_ctl
     or crc.exit_cout != crc.entry_cout
-    or crc.sram_echo_length != TARGET.sector_length
-    or crc.sram_echo_crc32 != binascii.crc32(staged_candidate)
+    or (crc.sram_echo_length, crc.sram_echo_crc32) != (0, 0)
   ):
     raise ProtocolError("intermediate CRC/DCRA/SRAM evidence is inconsistent")
   return crc

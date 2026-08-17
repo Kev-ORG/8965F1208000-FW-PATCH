@@ -27,7 +27,7 @@ def test_intermediate_computes_live_and_hypothetical_dcra_and_restores_entry_sta
   assert "crc_prefix_sw(0u" in source
   assert "crc_full_sw(0u" in source
   assert "crc_full_sw(1u" in source
-  assert "crc_region(SRAM_BUFFER, TARGET_LENGTH" in source
+  assert "SRAM_BUFFER" not in source
   assert "if ((entry_ctl & 3u) != 0u)" in source
   assert "if (restore_dcra(entry_ctl, entry_cout) != 0u)" in source
   assert "CRC_CANDIDATE_ADJUST 0x414F47CCu" in source

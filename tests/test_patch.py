@@ -78,8 +78,8 @@ def _observation(*, old_adjustment, target_candidate, crc_candidate, final=False
     patched_dcra_raw=TARGET.crc_residue,
     exit_ctl=0x10203040,
     exit_cout=0x50607080,
-    sram_echo_length=0 if final else TARGET.sector_length,
-    sram_echo_crc32=0 if final else binascii.crc32(target_candidate),
+    sram_echo_length=0,
+    sram_echo_crc32=0,
   )
 
 

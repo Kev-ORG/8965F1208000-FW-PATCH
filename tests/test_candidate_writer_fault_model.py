@@ -1,6 +1,15 @@
 import pytest
 
 
+def test_candidate_writer_image_contains_only_local_candidate_authorization():
+  from eps_patch.candidate_writer import CandidateWriterPayloadImage
+
+  fields = CandidateWriterPayloadImage.__dataclass_fields__
+  assert "staged_candidate" not in fields
+  assert "staged_candidate_sha256" not in fields
+  assert {"operation", "sector_base", "intent", "payload"} <= set(fields)
+
+
 def test_candidate_writer_locks_the_corrected_crc_adjustment_word():
   from eps_patch.candidate_writer import CANDIDATE_ADJUSTMENT
 

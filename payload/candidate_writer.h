@@ -71,6 +71,17 @@ static uint32_t candidate_intent_word(uint32_t offset) {
   return MMIO32((uint32_t)&candidate_writer_intent_block+offset);
 }
 
+static void copy_sector_to_sram(
+  uint32_t source_base,
+  const struct runtime_guard *guard
+) {
+  uint32_t index;
+  for(index=0u;index<TARGET_LENGTH;++index){
+    SRAM_BUFFER[index]=MMIO8(source_base+index);
+    if((index&0x7FFu)==0u)feed_watchdog(guard);
+  }
+}
+
 static int validate_candidate_intent(const struct runtime_guard *guard) {
   uint32_t index;
   if(candidate_intent_word(0u)!=CANDIDATE_INTENT_MAGIC
@@ -92,21 +103,24 @@ static int validate_candidate_intent(const struct runtime_guard *guard) {
   if(crc_region32((const volatile uint8_t *)TARGET_BASE,TARGET_LENGTH,guard)
       !=candidate_intent_word(24u)
     ||crc_region32((const volatile uint8_t *)CRC_SECTOR_BASE,TARGET_LENGTH,guard)
-      !=candidate_intent_word(28u)
-    ||crc_region32(SRAM_BUFFER,TARGET_LENGTH,guard)
-      !=candidate_intent_word(32u))return 5;
+      !=candidate_intent_word(28u))return 5;
 #if WRITER_OPERATION == PROTO_OP_WRITE_TARGET_CANDIDATE
   if(candidate_intent_word(36u)!=ORIGINAL_INSTRUCTION_WORD
     ||MMIO32(TARGET_BASE+TARGET_INSTRUCTION_OFFSET)!=ORIGINAL_INSTRUCTION_WORD
-    ||candidate_intent_word(44u)!=PATCHED_INSTRUCTION_WORD
-    ||MMIO32((uint32_t)SRAM_BUFFER+TARGET_INSTRUCTION_OFFSET)!=PATCHED_INSTRUCTION_WORD)return 6;
+    ||candidate_intent_word(44u)!=PATCHED_INSTRUCTION_WORD)return 6;
+  copy_sector_to_sram(WRITER_SECTOR_BASE,guard);
+  MMIO32((uint32_t)SRAM_BUFFER+TARGET_INSTRUCTION_OFFSET)=PATCHED_INSTRUCTION_WORD;
+  if(MMIO32((uint32_t)SRAM_BUFFER+TARGET_INSTRUCTION_OFFSET)!=PATCHED_INSTRUCTION_WORD)return 7;
 #else
   if(candidate_intent_word(36u)!=PATCHED_INSTRUCTION_WORD
     ||MMIO32(TARGET_BASE+TARGET_INSTRUCTION_OFFSET)!=PATCHED_INSTRUCTION_WORD
-    ||candidate_intent_word(44u)!=CANDIDATE_ADJUST_WORD
-    ||MMIO32((uint32_t)SRAM_BUFFER+SOURCE_ADJUST_OFFSET)!=CANDIDATE_ADJUST_WORD
+    ||candidate_intent_word(44u)!=CANDIDATE_ADJUST_WORD)return 6;
+  copy_sector_to_sram(WRITER_SECTOR_BASE,guard);
+  MMIO32((uint32_t)SRAM_BUFFER+SOURCE_ADJUST_OFFSET)=CANDIDATE_ADJUST_WORD;
+  if(MMIO32((uint32_t)SRAM_BUFFER+SOURCE_ADJUST_OFFSET)!=CANDIDATE_ADJUST_WORD
     ||MMIO32((uint32_t)SRAM_BUFFER+CRC_MAGIC_OFFSET)!=MAGIC_WORD)return 7;
 #endif
+  if(crc_region32(SRAM_BUFFER,TARGET_LENGTH,guard)!=candidate_intent_word(32u))return 8;
   return 0;
 }
 

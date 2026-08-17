@@ -198,18 +198,12 @@ class SpecializedPayloadImage:
   envelope: bytes
   sha256: str
   sector_base: int
-  backup_sha256: str
 
   def validate(self) -> bytes:
     if self.name != self.manifest.name:
       raise PayloadError("specialized payload name does not match its reviewed template")
     if self.sector_base not in (TARGET.sector_base, TARGET.crc_sector_base):
       raise PayloadError("specialized payload sector base is not allowlisted")
-    if (
-      type(self.backup_sha256) is not str or len(self.backup_sha256) != 64
-      or any(character not in "0123456789abcdef" for character in self.backup_sha256)
-    ):
-      raise PayloadError("specialized payload backup SHA-256 is malformed")
     shellcode = specialize_shellcode(
       self.template, manifest=self.manifest, intent=self.intent,
     )
@@ -227,7 +221,7 @@ class SpecializedPayloadImage:
 
 def build_specialized_payload_image(
   *, template: bytes, manifest: PayloadTemplateManifest, intent: bytes,
-  sector_base: int, backup_sha256: str,
+  sector_base: int,
 ) -> SpecializedPayloadImage:
   shellcode = specialize_shellcode(template, manifest=manifest, intent=intent)
   envelope = build_envelope(
@@ -241,7 +235,6 @@ def build_specialized_payload_image(
     envelope=envelope,
     sha256=hashlib.sha256(envelope).hexdigest(),
     sector_base=sector_base,
-    backup_sha256=backup_sha256,
   )
   image.validate()
   return image

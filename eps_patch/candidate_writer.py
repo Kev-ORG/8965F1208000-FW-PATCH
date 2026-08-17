@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import binascii
-import hashlib
 import struct
 from dataclasses import dataclass
 
@@ -31,7 +30,7 @@ class CandidateWriterIntent:
   sector_base: int
   live_target_crc32: int
   live_crc_crc32: int
-  staged_candidate_crc32: int
+  candidate_crc32: int
   live_target_instruction: bytes
   live_adjustment: bytes
   staged_context: bytes
@@ -66,7 +65,7 @@ class CandidateWriterIntent:
     numbers = (
       self.live_target_crc32,
       self.live_crc_crc32,
-      self.staged_candidate_crc32,
+      self.candidate_crc32,
     )
     if any(type(value) is not int or not 0 <= value <= 0xFFFFFFFF for value in numbers):
       raise CandidateWriterError("candidate writer CRC32 fields must be exact uint32 values")
@@ -114,12 +113,10 @@ class CandidateWriterIntent:
 
 @dataclass(frozen=True, slots=True)
 class CandidateWriterPayloadImage:
-  """One typed writer image bound to its fixed direction and staged sector."""
+  """One typed writer image bound to its fixed direction and local candidate."""
 
   operation: int
   sector_base: int
-  staged_candidate: bytes
-  staged_candidate_sha256: str
   intent: CandidateWriterIntent
   payload: object
 
@@ -139,36 +136,12 @@ class CandidateWriterPayloadImage:
       raise CandidateWriterError("candidate payload intent has the wrong concrete type")
     if self.intent.operation != self.operation or self.intent.sector_base != expected_base:
       raise CandidateWriterError("candidate payload intent direction does not match metadata")
-    if type(self.staged_candidate) is not bytes or len(self.staged_candidate) != TARGET.sector_length:
-      raise CandidateWriterError("candidate payload staged sector is not exact")
-    actual_sha = hashlib.sha256(self.staged_candidate).hexdigest()
-    if (
-      type(self.staged_candidate_sha256) is not str
-      or self.staged_candidate_sha256 != actual_sha
-      or binascii.crc32(self.staged_candidate) != self.intent.staged_candidate_crc32
-    ):
-      raise CandidateWriterError("candidate payload staged CRC/SHA metadata is inconsistent")
-    if self.operation == OP_WRITE_TARGET_CANDIDATE:
-      staged_context = self.staged_candidate[
-        TARGET.instruction_offset:TARGET.instruction_offset + 4
-      ]
-      expected_context = TARGET.patched_instruction
-    else:
-      staged_context = self.staged_candidate[
-        TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4
-      ]
-      expected_context = CANDIDATE_ADJUSTMENT
-      if self.staged_candidate[0x7E00:0x7E04] != TARGET.magic_word.to_bytes(4, "little"):
-        raise CandidateWriterError("CRC candidate staged boot magic is invalid")
-    if staged_context != expected_context:
-      raise CandidateWriterError("candidate payload staged direction context is invalid")
     if type(self.payload) is not SpecializedPayloadImage:
       raise CandidateWriterError("candidate payload image has the wrong concrete type")
     if (
       self.payload.name != expected_name
       or self.payload.manifest is not REVIEWED_TEMPLATE_MANIFESTS[expected_name]
       or self.payload.sector_base != expected_base
-      or self.payload.backup_sha256 != actual_sha
       or self.payload.intent != self.intent.to_bytes()
     ):
       raise CandidateWriterError("candidate payload template/name/base/intent binding is invalid")
@@ -178,7 +151,7 @@ class CandidateWriterPayloadImage:
 
 def _build_candidate_payload_image(
   *, expected_operation: int, expected_name: str, template: bytes,
-  manifest, intent: CandidateWriterIntent, staged_candidate: bytes,
+  manifest, intent: CandidateWriterIntent,
 ) -> CandidateWriterPayloadImage:
   from .payload import REVIEWED_TEMPLATE_MANIFESTS, build_specialized_payload_image
 
@@ -186,20 +159,16 @@ def _build_candidate_payload_image(
     raise CandidateWriterError("candidate payload intent is for the wrong direction")
   if manifest is not REVIEWED_TEMPLATE_MANIFESTS.get(expected_name):
     raise CandidateWriterError("candidate payload manifest is for the wrong direction")
-  if type(staged_candidate) is not bytes or len(staged_candidate) != TARGET.sector_length:
-    raise CandidateWriterError("candidate payload staged sector is not exact")
   expected_base = (
     TARGET.sector_base
     if expected_operation == OP_WRITE_TARGET_CANDIDATE else TARGET.crc_sector_base
   )
-  staged_sha = hashlib.sha256(staged_candidate).hexdigest()
   payload = build_specialized_payload_image(
     template=template, manifest=manifest, intent=intent.to_bytes(),
-    sector_base=expected_base, backup_sha256=staged_sha,
+    sector_base=expected_base,
   )
   image = CandidateWriterPayloadImage(
     operation=expected_operation, sector_base=expected_base,
-    staged_candidate=staged_candidate, staged_candidate_sha256=staged_sha,
     intent=intent, payload=payload,
   )
   image.validate()
@@ -208,23 +177,21 @@ def _build_candidate_payload_image(
 
 def build_target_candidate_payload_image(
   *, template: bytes, manifest, intent: CandidateWriterIntent,
-  staged_candidate: bytes,
 ) -> CandidateWriterPayloadImage:
   return _build_candidate_payload_image(
     expected_operation=OP_WRITE_TARGET_CANDIDATE,
     expected_name="write_target_candidate", template=template,
-    manifest=manifest, intent=intent, staged_candidate=staged_candidate,
+    manifest=manifest, intent=intent,
   )
 
 
 def build_crc_candidate_payload_image(
   *, template: bytes, manifest, intent: CandidateWriterIntent,
-  staged_candidate: bytes,
 ) -> CandidateWriterPayloadImage:
   return _build_candidate_payload_image(
     expected_operation=OP_WRITE_CRC_CANDIDATE,
     expected_name="write_crc_candidate", template=template,
-    manifest=manifest, intent=intent, staged_candidate=staged_candidate,
+    manifest=manifest, intent=intent,
   )
 
 

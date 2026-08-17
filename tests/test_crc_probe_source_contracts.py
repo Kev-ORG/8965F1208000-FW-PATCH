@@ -56,7 +56,7 @@ def test_probe_and_verify_bind_the_fixed_crc_record_meanings():
   assert "crc_full_sw(1u" in probe
   assert "dcra_full_raw(0u" in probe
   assert "dcra_full_raw(1u" in probe
-  assert "SRAM_BUFFER" in probe
+  assert "SRAM_BUFFER" not in probe
 
   assert "PATCHED_INSTRUCTION_WORD" in verify
   assert "crc_prefix_sw(0u" in verify
@@ -95,15 +95,12 @@ def test_crc_payload_sources_are_read_only_and_have_no_steering_can_path():
       assert forbidden not in source
 
 
-def test_sram_echo_crc_helper_is_compiled_only_for_staged_crc_prechecks():
+def test_crc_prechecks_have_no_host_staged_sram_echo_helper():
   dcra, probe, verify = _crc_sources()
 
   assert "#define CRC_PROBE_PAYLOAD 1" in probe
   assert "CRC_PROBE_PAYLOAD" not in verify
-  assert (
-    "#if defined(CRC_PROBE_PAYLOAD) || defined(CRC_INTERMEDIATE_PAYLOAD)\n"
-    "static uint32_t crc_region" in dcra
-  )
+  assert "static uint32_t crc_region" not in dcra
 
 
 def test_dcra_restore_order_and_reporting_paths_are_fail_closed():

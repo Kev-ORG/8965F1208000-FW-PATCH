@@ -43,8 +43,8 @@ void exploit(void) {
   }
   values[PROTO_CRC_EXIT_CTL] = DCRA_CTL;
   values[PROTO_CRC_EXIT_COUT] = DCRA_COUT;
-  values[PROTO_CRC_SRAM_ECHO_LENGTH] = TARGET_LENGTH;
-  values[PROTO_CRC_SRAM_ECHO_CRC32] = crc_region(SRAM_BUFFER, TARGET_LENGTH, &guard);
+  values[PROTO_CRC_SRAM_ECHO_LENGTH] = 0u;
+  values[PROTO_CRC_SRAM_ECHO_CRC32] = 0u;
 
   (void)send_crc_stream(PROTO_OP_CRC_PROBE, values, &guard);
   runtime_end(&guard);

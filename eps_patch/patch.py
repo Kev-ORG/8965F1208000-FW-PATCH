@@ -301,7 +301,7 @@ def _run_patch_locked(
       target_intent = CandidateWriterIntent.for_target(
         live_target_crc32=source_target_crc,
         live_crc_crc32=source_crc_crc,
-        staged_candidate_crc32=target_candidate_crc,
+        candidate_crc32=target_candidate_crc,
         live_target_instruction=target.original_instruction,
         live_adjustment=candidate.old_adjustment,
         staged_context=target.patched_instruction,
@@ -311,7 +311,6 @@ def _run_patch_locked(
         template=writer_templates["write_target_candidate"],
         manifest=REVIEWED_TEMPLATE_MANIFESTS["write_target_candidate"],
         intent=target_intent,
-        staged_candidate=candidate.target_final,
       )
       target_prompt = _writer_prompt(
         "TARGET",
@@ -405,7 +404,7 @@ def _run_patch_locked(
       crc_intent = CandidateWriterIntent.for_crc(
         live_target_crc32=target_candidate_crc,
         live_crc_crc32=source_crc_crc,
-        staged_candidate_crc32=crc_candidate_crc,
+        candidate_crc32=crc_candidate_crc,
         live_target_instruction=target.patched_instruction,
         live_adjustment=candidate.old_adjustment,
         staged_context=CANDIDATE_ADJUSTMENT,
@@ -415,7 +414,6 @@ def _run_patch_locked(
         template=writer_templates["write_crc_candidate"],
         manifest=REVIEWED_TEMPLATE_MANIFESTS["write_crc_candidate"],
         intent=crc_intent,
-        staged_candidate=candidate.crc_final,
       )
       crc_prompt = _writer_prompt(
         "CRC",
@@ -870,8 +868,7 @@ def _validate_target_precheck(
     ))
     or (observation.exit_ctl, observation.exit_cout)
       != (observation.entry_ctl, observation.entry_cout)
-    or observation.sram_echo_length != target.sector_length
-    or observation.sram_echo_crc32 != binascii.crc32(candidate.target_final)
+    or (observation.sram_echo_length, observation.sram_echo_crc32) != (0, 0)
   ):
     raise PatchError("target precheck CRC/software/DCRA agreement failed")
 
@@ -882,7 +879,7 @@ def _validate_crc_precheck(
   target: TargetManifest,
 ) -> None:
   try:
-    validate_crc_intermediate(result, staged_candidate=candidate.crc_final)
+    validate_crc_intermediate(result)
   except Exception as exc:
     raise PatchError(f"CRC intermediate validation failed: {exc}") from exc
   target_live, crc_live = _regions(result, target, "CRC intermediate")

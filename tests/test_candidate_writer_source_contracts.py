@@ -44,11 +44,14 @@ def test_writer_prechecks_dominate_first_faci_control_write_and_cover_both_live_
   for token in (
     "crc_region32((const volatile uint8_t *)TARGET_BASE",
     "crc_region32((const volatile uint8_t *)CRC_SECTOR_BASE",
-    "crc_region32(SRAM_BUFFER",
+    "copy_sector_to_sram(WRITER_SECTOR_BASE",
     "ORIGINAL_INSTRUCTION_WORD", "PATCHED_INSTRUCTION_WORD",
     "CRC_ADJUST", "MAGIC0_ADDRESS", "MAGIC1_ADDRESS",
   ):
     assert token in validation
+  assert validation.index("copy_sector_to_sram(WRITER_SECTOR_BASE") < validation.index(
+    "crc_region32(SRAM_BUFFER"
+  )
   assert "exact_idle" in exploit
 
 

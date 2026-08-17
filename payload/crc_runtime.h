@@ -91,22 +91,6 @@ static uint32_t restore_dcra(uint32_t entry_ctl, uint32_t entry_cout) {
   return 0u;
 }
 
-#if defined(CRC_PROBE_PAYLOAD) || defined(CRC_INTERMEDIATE_PAYLOAD)
-static uint32_t crc_region(
-  const volatile uint8_t *data,
-  uint32_t length,
-  const struct runtime_guard *guard
-) {
-  uint32_t crc = 0xFFFFFFFFu;
-  uint32_t offset;
-  for (offset = 0u; offset < length; ++offset) {
-    crc = crc32_update(crc, data[offset]);
-    if ((offset & 0x7FFu) == 0u) feed_watchdog(guard);
-  }
-  return crc ^ 0xFFFFFFFFu;
-}
-#endif
-
 static int stream_crc_region(
   uint8_t operation,
   uint8_t slot,

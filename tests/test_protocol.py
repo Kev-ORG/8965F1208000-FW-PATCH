@@ -416,21 +416,19 @@ def _valid_intermediate_fixture():
   crc_source = bytearray(TARGET.sector_length)
   crc_source[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = bytes.fromhex("7f886209")
   crc_source[0x7E00:0x7E04] = TARGET.magic_word.to_bytes(4, "little")
-  staged = bytearray(crc_source)
-  staged[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = bytes.fromhex("cc474f41")
   values = (
     0x10203040, 0x50607080, TARGET.crc_range_start, TARGET.crc_range_end,
     TARGET.crc_adjust_address, 0x0962887F, 0xBEB0B833, 0x414F47CC,
     0x12345678, 0xFFFFFFFF, 0x12345678, 0xFFFFFFFF,
-    0x10203040, 0x50607080, TARGET.sector_length, binascii.crc32(staged),
+    0x10203040, 0x50607080, 0, 0,
   )
-  return bytes(target), bytes(crc_source), bytes(staged), values
+  return bytes(target), bytes(crc_source), values
 
 
 def test_crc_intermediate_requires_exact_ordered_target_magic_words():
   from eps_patch.protocol import FrameType, OP_CRC_INTERMEDIATE, ProtocolError
 
-  target, crc_source, _staged, values = _valid_intermediate_fixture()
+  target, crc_source, values = _valid_intermediate_fixture()
   frames = crc_probe_frames(target, crc_source, crc_values=values, operation=OP_CRC_INTERMEDIATE)
   magic = next(index for index, frame in enumerate(frames) if frame[0] == FrameType.MAGIC)
   frames[magic] = frames[magic][:4] + struct.pack("<I", 0)
@@ -441,19 +439,19 @@ def test_crc_intermediate_requires_exact_ordered_target_magic_words():
 def test_crc_intermediate_semantic_validator_requires_all_exact_evidence():
   from eps_patch.protocol import OP_CRC_INTERMEDIATE, validate_crc_intermediate
 
-  target, crc_source, staged, values = _valid_intermediate_fixture()
+  target, crc_source, values = _valid_intermediate_fixture()
   result = collect(
     crc_probe_frames(target, crc_source, crc_values=values, operation=OP_CRC_INTERMEDIATE),
     operation=OP_CRC_INTERMEDIATE,
   )
-  assert validate_crc_intermediate(result, staged_candidate=staged) is result.crc
+  assert validate_crc_intermediate(result) is result.crc
 
 
 @pytest.mark.parametrize("slot", range(16))
 def test_crc_intermediate_semantic_validator_rejects_each_inconsistent_slot(slot):
   from eps_patch.protocol import OP_CRC_INTERMEDIATE, ProtocolError, validate_crc_intermediate
 
-  target, crc_source, staged, values = _valid_intermediate_fixture()
+  target, crc_source, values = _valid_intermediate_fixture()
   changed = list(values)
   changed[slot] ^= 1
   result = collect(
@@ -461,7 +459,7 @@ def test_crc_intermediate_semantic_validator_rejects_each_inconsistent_slot(slot
     operation=OP_CRC_INTERMEDIATE,
   )
   with pytest.raises(ProtocolError, match="intermediate"):
-    validate_crc_intermediate(result, staged_candidate=staged)
+    validate_crc_intermediate(result)
 
 
 @pytest.mark.parametrize(
@@ -474,13 +472,13 @@ def test_crc_intermediate_semantic_validator_requires_exact_result_component_typ
     validate_crc_intermediate,
   )
 
-  target, crc_source, staged, values = _valid_intermediate_fixture()
+  target, crc_source, values = _valid_intermediate_fixture()
   result = collect(
     crc_probe_frames(target, crc_source, crc_values=values, operation=OP_CRC_INTERMEDIATE),
     operation=OP_CRC_INTERMEDIATE,
   )
   if mutation == "crc-values":
-    changed = replace(result, crc_values=result.crc_values[:-1] + (0,))
+    changed = replace(result, crc_values=result.crc_values[:-1] + (1,))
   elif mutation == "result-subclass":
     class ResultSubclass(StreamResult):
       pass
@@ -500,7 +498,7 @@ def test_crc_intermediate_semantic_validator_requires_exact_result_component_typ
       pass
     changed = replace(result, crc=CrcSubclass(*result.crc_values))
   with pytest.raises(ProtocolError, match="intermediate"):
-    validate_crc_intermediate(changed, staged_candidate=staged)
+    validate_crc_intermediate(changed)
 
 
 @pytest.mark.parametrize("mutation", ("float", "bool"))
@@ -508,7 +506,7 @@ def test_crc_intermediate_rejects_equal_by_coercion_crc_value_elements(mutation)
   from dataclasses import replace
   from eps_patch.protocol import OP_CRC_INTERMEDIATE, ProtocolError, validate_crc_intermediate
 
-  target, crc_source, staged, values = _valid_intermediate_fixture()
+  target, crc_source, values = _valid_intermediate_fixture()
   if mutation == "bool":
     values = (0,) + values[1:12] + (0,) + values[13:]
   result = collect(
@@ -519,7 +517,7 @@ def test_crc_intermediate_rejects_equal_by_coercion_crc_value_elements(mutation)
   coerced[0] = float(coerced[0]) if mutation == "float" else False
   changed = replace(result, crc_values=tuple(coerced))
   with pytest.raises(ProtocolError, match="exact uint32"):
-    validate_crc_intermediate(changed, staged_candidate=staged)
+    validate_crc_intermediate(changed)
 
 
 @pytest.mark.parametrize("mutation", ("drop-crc", "duplicate-crc", "wrong-status", "legacy-diagnostic"))

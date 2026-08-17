@@ -1152,7 +1152,6 @@ def _build_restore_payload(
       manifest=REVIEWED_TEMPLATE_MANIFESTS["restore_sector"],
       intent=build_restore_intent(backup, target=target),
       sector_base=backup.base,
-      backup_sha256=backup.sha256,
     )
     image.validate()
   except Exception as exc:
