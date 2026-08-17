@@ -41,6 +41,11 @@ class ArtifactLayout:
     return self.probe_directory / "recovery-metadata.json"
 
   @property
+  def probe_failure_report(self) -> Path:
+    """Fixed non-trusted diagnostic retained after a complete failed probe."""
+    return self.root / "failures" / "last-probe-failure.json"
+
+  @property
   def patch_root(self) -> Path:
     return self.root / "patch"
 
