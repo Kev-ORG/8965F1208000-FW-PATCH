@@ -46,7 +46,25 @@ Patch 自动读取固定 probe 证据，不接受报告、备份或目录参数�
 
 成功流程共有五个计划性断电点：`PROBED → TARGET_PRECHECKED`、`TARGET_PRECHECKED → TARGET_ARMED`、`TARGET_COMMITTED → CRC_PRECHECKED`、`CRC_PRECHECKED → CRC_ARMED`、`CRC_COMMITTED → VERIFY_PENDING`。其中两个 `*_PRECHECKED` 阶段只完成只读 CRC/DCRA 检查，没有 arm writer；下一次重新运行才会显示精确确认并执行对应 writer。UDS reset 不能代替完整断电。
 
-writer 前会先单独显示完整的 `WRITE-TARGET` 或 `WRITE-CRC` 交易摘要，然后明确显示 `输入大写 YES 继续 / Type YES to continue:`。核对地址、source、candidate、CRC 和 envelope 后，只输入精确的大写 `YES` 并回车；小写、空行、前后空格或其他文本都会在 writer arm 前停止。最终 PASS 表示独立回读精确匹配候选并通过 CRC/DCRA 验证。`TARGET_INDETERMINATE`、`CRC_INDETERMINATE`、`RECOVERY_REQUIRED` 时禁止再次 patch，改运行 restore。
+writer 前会先单独显示完整的 `WRITE-TARGET` 或 `WRITE-CRC` 交易摘要，然后明确显示 `输入大写 YES 继续 / Type YES to continue:`。核对地址、source、candidate、CRC 和 envelope 后，只输入精确的大写 `YES` 并回车；小写、空行、前后空格或其他文本都会在 writer arm 前停止。最终 PASS 表示独立回读精确匹配候选并通过 CRC/DCRA 验证。`TARGET_INDETERMINATE` 和 `RECOVERY_REQUIRED` 禁止再次 patch，改运行 restore。`CRC_INDETERMINATE` 只允许下面这一条受限的只读判定路径。
+
+#### CRC writer 回传不确定时
+
+如果 CRC writer 已 arm，但主机没有收到完整、有效的六阶段状态和扇区回读，脚本会记录 `CRC_INDETERMINATE`。终端出现 `unknown frame type 0x03` 不能证明 CRC 写入成功或失败：`0x03` 是 ISO-TP 单帧长度，UDS `7F 31 78` 表示 RoutineControl Response Pending。新版主机解析会忽略该 Pending，而不要求 CAN padding 全为零；其他 NRC 或未知帧会输出完整 raw hex。
+
+安装新版脚本后，完成车辆/EPS 与 comma 的完整断电重启，重新 SSH，再运行一次：
+
+```bash
+python3.12 eps_patch.py patch
+```
+
+这次命令只运行已审查的只读 `live_read`，完整读取 target 与 CRC 两个 32 KiB 扇区，逐字节与固定 source/candidate 比较；它不会进入 FACI P/E，也不会显示 `YES`：
+
+- 输出/状态为 `CRC_PRECHECKED`：target 完整等于候选、CRC 完整等于原始 source。按提示完整断电重启，再运行 `patch`；核对 `WRITE-CRC` 后输入大写 `YES`，只允许这一次人工重写。
+- 输出/状态为 `CRC_COMMITTED`：target 和 CRC 都已完整等于候选。脚本不会再次写 CRC；按提示完整断电重启，再运行 `patch` 完成最终只读 CRC/DCRA 验证。
+- 报告 partial/unknown、身份不符或 live-read 不完整：不要再次运行 `patch`，运行 `restore`。原 `CRC_INDETERMINATE` state 保持不变。
+
+若那一次人工 CRC 重写仍变成 `CRC_INDETERMINATE`，以后所有 `patch` 都会在 preflight、Panda 连接和确认之前拒绝；只能进入 restore。车辆故障码或转向状态不能代替完整扇区回读。
 
 ### 3. Restore：恢复已记录事故
 
@@ -64,7 +82,7 @@ Restore 的计划性断电同样是“保存阶段并退出 → 完整断电 →
 - **最小接口：** 用户不能指定报告、备份、incident、扇区或产物目录；payload/template 由 manifest、大小和 SHA-256 固定。
 - **一次综合 probe：** ECU payload 保留寄存器状态机、轮询、watchdog、清理和 DCRA 原始观察；SHA、软件 CRC 与回传验证由 comma 主机完成。
 - **双扇区受控写入：** 固定地址、方向、intent、页数和确认；不自动 rollback、不自动重试。
-- **可重启断电流程：** 计划性断电时保存状态并退出；下一次同命令只允许进入指定安全阶段。writer 已 arm 或结果不确定时绝不 resume/retry，只进入 restore。
+- **可重启断电流程：** 计划性断电时保存状态并退出；下一次同命令只允许进入指定安全阶段。唯一例外是一个尚未重试的 `CRC_INDETERMINATE` 可先执行一次只读双扇区判定；只有精确 source 才允许一次新的人工确认 writer，精确 candidate 跳过 writer，其他状态只进入 restore。
 - **Incident gate：** 每个未被绑定 PASS restore 关闭的历史 incident 都会阻止新的 patch；restore 在每次 arm 前重新 live-read 两扇区并 fail closed。
 
 ## English operating guide
@@ -105,7 +123,25 @@ Each `patch` invocation downloads and executes at most one ECU payload. It never
 
 A successful patch has five planned complete-power-cycle boundaries: `PROBED → TARGET_PRECHECKED`, `TARGET_PRECHECKED → TARGET_ARMED`, `TARGET_COMMITTED → CRC_PRECHECKED`, `CRC_PRECHECKED → CRC_ARMED`, and `CRC_COMMITTED → VERIFY_PENDING`. The two `*_PRECHECKED` stages perform only read-only CRC/DCRA checks and do not arm a writer; the following invocation displays the exact confirmation and runs that writer. A UDS reset is not a complete power cycle.
 
-Before each writer, the script displays the complete `WRITE-TARGET` or `WRITE-CRC` transaction on its own, followed by `Type YES to continue:`. Inspect the sector, source, candidate, CRC, and envelope values, then type exactly uppercase `YES` and press Enter. Lowercase, an empty answer, surrounding whitespace, or any other text stops before writer arm. Final PASS means independent readback exactly matches both candidates and validates CRC/DCRA. `TARGET_INDETERMINATE`, `CRC_INDETERMINATE`, and `RECOVERY_REQUIRED` never authorize another patch: use restore instead.
+Before each writer, the script displays the complete `WRITE-TARGET` or `WRITE-CRC` transaction on its own, followed by `Type YES to continue:`. Inspect the sector, source, candidate, CRC, and envelope values, then type exactly uppercase `YES` and press Enter. Lowercase, an empty answer, surrounding whitespace, or any other text stops before writer arm. Final PASS means independent readback exactly matches both candidates and validates CRC/DCRA. `TARGET_INDETERMINATE` and `RECOVERY_REQUIRED` never authorize another patch: use restore instead. `CRC_INDETERMINATE` permits only the constrained read-only reconciliation below.
+
+#### When the CRC writer response is indeterminate
+
+If the CRC writer was armed but the host did not receive a complete valid six-stage status and sector readback, the script records `CRC_INDETERMINATE`. An `unknown frame type 0x03` message does not prove whether CRC programming happened: `0x03` is the ISO-TP single-frame length, and UDS `7F 31 78` is RoutineControl Response Pending. The corrected host parser ignores that Pending response regardless of CAN padding; other NRCs and unknown frames retain their complete raw hex.
+
+After installing the corrected code, fully power-cycle the vehicle/EPS and comma, reconnect SSH, and run once:
+
+```bash
+python3.12 eps_patch.py patch
+```
+
+This invocation runs only the reviewed read-only `live_read` payload. It reads both complete 32 KiB sectors and compares every byte with the fixed source and candidate. It never enters FACI P/E and never prompts for `YES`:
+
+- `CRC_PRECHECKED`: target is the complete candidate and CRC is the complete source. Perform the requested complete power cycle, rerun `patch`, inspect `WRITE-CRC`, and type exact uppercase `YES`. This is the one permitted manual rewrite.
+- `CRC_COMMITTED`: both target and CRC are already complete candidates. No CRC writer runs; perform the requested complete power cycle and rerun `patch` for final read-only CRC/DCRA verification.
+- partial/unknown, identity mismatch, or incomplete live-read: do not run `patch` again. Run `restore`; the original `CRC_INDETERMINATE` state remains unchanged.
+
+If the one manual CRC rewrite is also `CRC_INDETERMINATE`, every later `patch` is rejected before preflight, Panda connection, or confirmation. Only restore remains. Vehicle DTCs or steering state are not substitutes for complete sector readback.
 
 New patching is also refused while any recoverable persisted incident lacks its bound PASS restore. Restore that incident before starting a new attempt.
 
@@ -127,7 +163,7 @@ On unknown live state, `INDETERMINATE`, failed confirmation, or writer/readback 
 - **Minimal public interface:** Users cannot select reports, backups, incidents, sectors, or artifact directories. Payload templates are pinned by the manifest, size, and SHA-256.
 - **One comprehensive probe:** The ECU payload retains register sequencing, bounded polling, watchdog handling, cleanup, and raw DCRA observation. The comma host verifies returned data, software checks, and artifacts.
 - **Controlled two-sector writes:** Addresses, order, intent, pages, and confirmation strings are fixed. There is no automatic rollback or writer retry.
-- **Restartable planned cycles:** A planned cycle saves the stage and exits. The same command after reboot may enter only the named next safe stage. An armed or uncertain writer is never resumed or retried; it is restore-only.
+- **Restartable planned cycles:** A planned cycle saves the stage and exits. The same command after reboot may enter only the named next safe stage. The sole exception is one not-yet-retried `CRC_INDETERMINATE`, which may run one read-only two-sector classification: exact source permits one newly confirmed writer, exact candidate skips the writer, and every other state is restore-only.
 - **Incident gate:** Every historical incident not closed by its bound PASS restore blocks new patching. Restore performs a fresh two-sector live read before every writer arm and fails closed.
 
 ## Scope

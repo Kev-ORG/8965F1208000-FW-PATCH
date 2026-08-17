@@ -272,7 +272,7 @@ class OfflineBench:
       result = run_patch(
         layout=layout,
         payloads={name: self._payload(name) for name in (
-          "crc_probe", "crc_intermediate", "crc_verify",
+          "crc_probe", "crc_intermediate", "crc_verify", "live_read",
         )},
         templates={
           name: (Path(__file__).resolve().parents[1] / "payload" / "build" / f"{name}.bin").read_bytes()
