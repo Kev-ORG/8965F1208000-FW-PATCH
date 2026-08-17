@@ -63,6 +63,6 @@ def test_root_cause_document_preserves_the_two_sector_safety_rationale():
     "crc",
     "dcra",
     "0x0962887f",
-    "0xd1f4ce24",
+    "0x414f47cc",
   ):
     assert required in document.lower()

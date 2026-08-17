@@ -22,12 +22,17 @@ void exploit(void) {
   }
 
   capture_dcra(&entry_ctl, &entry_cout);
+  if ((entry_ctl & 3u) != 0u) {
+    halt_crc_error(PROTO_OP_VERIFY_CRC, 3u, entry_ctl, &guard);
+  }
   live_adjust = MMIO32(CRC_ADJUST);
   prefix_crc = crc_prefix_sw(0u, &guard);
   new_adjust = crc_adjustment(prefix_crc);
   live_sw = crc_full_sw(0u, 0u, &guard);
   live_dcra = dcra_full_raw(0u, 0u, &guard);
-  restore_dcra(entry_ctl, entry_cout);
+  if (restore_dcra(entry_ctl, entry_cout) != 0u) {
+    halt_crc_error(PROTO_OP_VERIFY_CRC, 4u, entry_ctl, &guard);
+  }
 
   values[PROTO_CRC_ENTRY_CTL] = entry_ctl;
   values[PROTO_CRC_ENTRY_COUT] = entry_cout;

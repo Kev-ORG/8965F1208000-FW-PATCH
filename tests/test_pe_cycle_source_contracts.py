@@ -82,7 +82,13 @@ def test_comprehensive_probe_streams_two_full_regions_crc_dcra_magic_and_40_diag
   assert "capture_dcra" in source and "restore_dcra" in source
   assert "dcra_full_raw(0u, &guard)" in source
   assert "dcra_full_raw(1u, &guard)" in source
-  assert "CRC_PATCHED_ADJUST_WORD 0xD1F4CE24u" in DCRA_PATH.read_text(encoding="utf-8")
+  dcra = DCRA_PATH.read_text(encoding="utf-8")
+  assert "CRC_PATCHED_ADJUST_WORD 0x414F47CCu" in dcra
+  restore = dcra[dcra.index("static uint32_t restore_dcra"):]
+  assert "(ctl & 3u) != 0u" in restore
+  assert "DCRA_COUT = cout ^ 0xFFFFFFFFu" in restore
+  assert "return 1u;" in restore and "return 0u;" in restore
+  assert "if (restore_dcra(values[PROTO_DCRA_ENTRY_CTL], values[PROTO_DCRA_ENTRY_COUT]) != 0u)" in source
   assert "slot < 40u" in source
   assert "send_diagnostic(slot, widths[slot & 7u], snapshots[slot]" in source
   assert source.count("send_status_code(1u, outcome") == 1

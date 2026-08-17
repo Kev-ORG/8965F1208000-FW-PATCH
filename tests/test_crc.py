@@ -25,14 +25,14 @@ def test_candidate_changes_only_rx_byte_and_crc_word():
   crc[0x7E00:0x7E04] = (0x5AA5A55A).to_bytes(4, "little")
   crc[0x7DEC:0x7DF0] = bytes.fromhex("7f886209")
 
-  result = build_crc_candidate(bytes(target), bytes(crc), bytes.fromhex("24cef4d1"))
+  result = build_crc_candidate(bytes(target), bytes(crc), bytes.fromhex("cc474f41"))
 
   assert result.target_final[0x64E6] == 0x10
-  assert result.crc_final[0x7DEC:0x7DF0] == bytes.fromhex("24cef4d1")
+  assert result.crc_final[0x7DEC:0x7DF0] == bytes.fromhex("cc474f41")
   assert result.absolute_diffs == (
     (0x664E6, 0x31, 0x10),
-    (0xFFDEC, 0x7F, 0x24), (0xFFDED, 0x88, 0xCE),
-    (0xFFDEE, 0x62, 0xF4), (0xFFDEF, 0x09, 0xD1),
+    (0xFFDEC, 0x7F, 0xCC), (0xFFDED, 0x88, 0x47),
+    (0xFFDEE, 0x62, 0x4F), (0xFFDEF, 0x09, 0x41),
   )
 
 

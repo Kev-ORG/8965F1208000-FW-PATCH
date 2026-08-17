@@ -170,7 +170,7 @@ def test_restore_sector_stream_rejects_unreviewed_base_and_false_success():
 
 CRC_VALUES = (
   0, 0xFFFFFFFF, 0x18000, 0xFFDF0, 0xFFDEC,
-  0x0962887F, 0x2E0B31DB, 0xD1F4CE24,
+  0x0962887F, 0xBEB0B833, 0x414F47CC,
   0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
   0, 0xFFFFFFFF, 0x8000, 0x88341866,
 )
@@ -417,10 +417,10 @@ def _valid_intermediate_fixture():
   crc_source[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = bytes.fromhex("7f886209")
   crc_source[0x7E00:0x7E04] = TARGET.magic_word.to_bytes(4, "little")
   staged = bytearray(crc_source)
-  staged[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = bytes.fromhex("24cef4d1")
+  staged[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = bytes.fromhex("cc474f41")
   values = (
     0x10203040, 0x50607080, TARGET.crc_range_start, TARGET.crc_range_end,
-    TARGET.crc_adjust_address, 0x0962887F, 0x2E0B31DB, 0xD1F4CE24,
+    TARGET.crc_adjust_address, 0x0962887F, 0xBEB0B833, 0x414F47CC,
     0x12345678, 0xFFFFFFFF, 0x12345678, 0xFFFFFFFF,
     0x10203040, 0x50607080, TARGET.sector_length, binascii.crc32(staged),
   )

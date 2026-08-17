@@ -82,11 +82,13 @@ static void capture_dcra(uint32_t *ctl, uint32_t *cout) {
   *cout = entry_cout;
 }
 
-static void restore_dcra(uint32_t entry_ctl, uint32_t entry_cout) {
+static uint32_t restore_dcra(uint32_t entry_ctl, uint32_t entry_cout) {
+  if ((entry_ctl & 3u) != 0u) return 1u;
   DCRA_CTL = entry_ctl;
   syncp();
-  DCRA_COUT = entry_cout;
+  DCRA_COUT = entry_cout ^ 0xFFFFFFFFu;
   syncp();
+  return 0u;
 }
 
 #if defined(CRC_PROBE_PAYLOAD) || defined(CRC_INTERMEDIATE_PAYLOAD)

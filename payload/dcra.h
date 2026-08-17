@@ -7,7 +7,7 @@
 #define CRC_RANGE_START 0x00018000u
 #define CRC_RANGE_END 0x000FFDF0u
 #define CRC_PATCH_VALUE 0x10u
-#define CRC_PATCHED_ADJUST_WORD 0xD1F4CE24u
+#define CRC_PATCHED_ADJUST_WORD 0x414F47CCu
 
 static uint32_t dcra_full_raw(
   uint8_t hypothetical,
@@ -37,11 +37,13 @@ static void capture_dcra(uint32_t *ctl, uint32_t *cout) {
   *cout = DCRA_COUT;
 }
 
-static void restore_dcra(uint32_t ctl, uint32_t cout) {
+static uint32_t restore_dcra(uint32_t ctl, uint32_t cout) {
+  if ((ctl & 3u) != 0u) return 1u;
   DCRA_CTL = ctl;
   syncp();
-  DCRA_COUT = cout;
+  DCRA_COUT = cout ^ 0xFFFFFFFFu;
   syncp();
+  return 0u;
 }
 
 #endif

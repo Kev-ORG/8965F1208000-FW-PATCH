@@ -19,6 +19,9 @@ void exploit(void) {
   }
 
   capture_dcra(&entry_ctl, &entry_cout);
+  if ((entry_ctl & 3u) != 0u) {
+    halt_crc_error(PROTO_OP_CRC_PROBE, 2u, entry_ctl, &guard);
+  }
   prefix_crc = crc_prefix_sw(1u, &guard);
   new_adjust = crc_adjustment(prefix_crc);
 
@@ -35,7 +38,9 @@ void exploit(void) {
   values[PROTO_CRC_ORIGINAL_DCRA_RAW] = dcra_full_raw(0u, 0u, &guard);
   values[PROTO_CRC_PATCHED_DCRA_RAW] = dcra_full_raw(1u, new_adjust, &guard);
 
-  restore_dcra(entry_ctl, entry_cout);
+  if (restore_dcra(entry_ctl, entry_cout) != 0u) {
+    halt_crc_error(PROTO_OP_CRC_PROBE, 3u, entry_ctl, &guard);
+  }
   values[PROTO_CRC_EXIT_CTL] = DCRA_CTL;
   values[PROTO_CRC_EXIT_COUT] = DCRA_COUT;
   values[PROTO_CRC_SRAM_ECHO_LENGTH] = TARGET_LENGTH;

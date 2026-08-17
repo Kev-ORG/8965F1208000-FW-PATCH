@@ -1,6 +1,12 @@
 import pytest
 
 
+def test_candidate_writer_locks_the_corrected_crc_adjustment_word():
+  from eps_patch.candidate_writer import CANDIDATE_ADJUSTMENT
+
+  assert CANDIDATE_ADJUSTMENT == bytes.fromhex("cc474f41")
+
+
 @pytest.mark.parametrize("operation", (13, 14))
 def test_every_writer_fault_boundary_is_one_shot_and_never_passes(operation):
   from eps_patch.candidate_writer import (

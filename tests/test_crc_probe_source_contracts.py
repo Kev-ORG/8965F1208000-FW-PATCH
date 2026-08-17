@@ -42,7 +42,8 @@ def test_dcra_runs_boot_equivalent_words_and_restores_entry_registers():
   assert "address += 4u" in dcra
   assert "DCRA_IN = word" in dcra
   assert "DCRA_CTL = entry_ctl" in dcra
-  assert "DCRA_COUT = entry_cout" in dcra
+  assert "(entry_ctl & 3u) != 0u" in dcra
+  assert "DCRA_COUT = entry_cout ^ 0xFFFFFFFFu" in dcra
 
 
 def test_probe_and_verify_bind_the_fixed_crc_record_meanings():
@@ -107,28 +108,25 @@ def test_sram_echo_crc_helper_is_compiled_only_for_staged_crc_prechecks():
 
 def test_dcra_restore_order_and_reporting_paths_are_fail_closed():
   dcra, probe, verify = _crc_sources()
-  restore_start = dcra.index("static void restore_dcra")
+  restore_start = dcra.index("static uint32_t restore_dcra")
   restore_end = dcra.index("\n}\n", restore_start)
   restore = dcra[restore_start:restore_end]
 
   assert re.search(
+    r"if\s*\(\(entry_ctl\s*&\s*3u\)\s*!=\s*0u\)\s*return\s+1u;\s*"
     r"DCRA_CTL\s*=\s*entry_ctl;\s*syncp\(\);\s*"
-    r"DCRA_COUT\s*=\s*entry_cout;\s*syncp\(\);",
+    r"DCRA_COUT\s*=\s*entry_cout\s*\^\s*0xFFFFFFFFu;\s*syncp\(\);\s*"
+    r"return\s+0u;",
     restore,
   )
 
   for source in (probe, verify):
     capture = source.index("capture_dcra")
     tail = source[capture:]
-    restore_call = tail.index("restore_dcra")
+    assert "if ((entry_ctl & 3u) != 0u)" in tail
+    restore_call = tail.index("if (restore_dcra(entry_ctl, entry_cout) != 0u)")
     exit_ctl = tail.index("values[PROTO_CRC_EXIT_CTL] = DCRA_CTL")
     exit_cout = tail.index("values[PROTO_CRC_EXIT_COUT] = DCRA_COUT")
-    reports = tuple(
-      match.start()
-      for match in re.finditer(r"\b(?:halt_crc_error|send_crc_stream)\s*\(", tail)
-    )
-
     assert restore_call < exit_ctl < exit_cout
-    assert reports
-    assert all(exit_cout < report for report in reports)
+    assert exit_cout < tail.index("(void)send_crc_stream")
     assert "can_send(" not in source

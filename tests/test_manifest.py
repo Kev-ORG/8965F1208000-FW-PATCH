@@ -40,8 +40,8 @@ def test_crc_manifest_uses_physical_addresses_without_translation():
   assert (TARGET.crc_sector_base, TARGET.crc_sector_end) == (0xF8000, 0x100000)
   assert TARGET.crc_adjust_address == 0xFFDEC
   assert TARGET.crc_original_adjust_word == 0x0962887F
-  assert TARGET.crc_patched_prefix_sw == 0x2E0B31DB
-  assert TARGET.crc_patched_adjust_word == 0xD1F4CE24
+  assert TARGET.crc_patched_prefix_sw == 0xBEB0B833
+  assert TARGET.crc_patched_adjust_word == 0x414F47CC
   assert TARGET.crc_residue == 0xFFFFFFFF
   assert TARGET.crc_patched_prefix_sw ^ TARGET.crc_residue == TARGET.crc_patched_adjust_word
   assert TARGET.pure_code_file_offset(TARGET.crc_adjust_address) == 0xFFDEC

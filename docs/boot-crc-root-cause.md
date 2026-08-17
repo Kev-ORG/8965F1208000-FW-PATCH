@@ -8,7 +8,7 @@ semantic probe backup.
 The EPS verifies Code Flash through a CRC/DCRA calculation whose physical
 range ends in the final CRC sector (`0xf8000`). The four-byte adjustment word
 at `0xffdec` compensates for the target-byte change. Its reviewed original
-value is `0x0962887f`; the reviewed patched value is `0xd1f4ce24`. Updating
+value is `0x0962887f`; the reviewed patched value is `0x414f47cc`. Updating
 only `0x60000` would therefore leave the boot-time CRC relationship
 inconsistent. Updating only `0xf8000` would make the adjustment describe code
 that was not written.

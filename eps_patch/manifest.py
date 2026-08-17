@@ -102,7 +102,7 @@ class TargetManifest:
       self.crc_patched_prefix_sw,
       self.crc_patched_adjust_word,
       self.crc_residue,
-    ) != (0x0962887F, 0x2E0B31DB, 0xD1F4CE24, 0xFFFFFFFF):
+    ) != (0x0962887F, 0xBEB0B833, 0x414F47CC, 0xFFFFFFFF):
       raise ValueError("CRC constants do not match the reviewed original and patched states")
     if self.crc_patched_prefix_sw ^ self.crc_residue != self.crc_patched_adjust_word:
       raise ValueError("CRC patched adjustment does not match the reviewed residue formula")
@@ -172,8 +172,8 @@ TARGET = TargetManifest(
   crc_sector_end=0x100000,
   crc_adjust_address=0xFFDEC,
   crc_original_adjust_word=0x0962887F,
-  crc_patched_prefix_sw=0x2E0B31DB,
-  crc_patched_adjust_word=0xD1F4CE24,
+  crc_patched_prefix_sw=0xBEB0B833,
+  crc_patched_adjust_word=0x414F47CC,
   crc_residue=0xFFFFFFFF,
 )
 TARGET.validate()

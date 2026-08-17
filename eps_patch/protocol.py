@@ -634,7 +634,7 @@ def validate_crc_intermediate(
       != bytes.fromhex("7f886209")
     or crc_sector[0x7E00:0x7E04] != TARGET.magic_word.to_bytes(4, "little")
     or staged_candidate[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4]
-      != bytes.fromhex("24cef4d1")
+      != bytes.fromhex("cc474f41")
     or staged_candidate[0x7E00:0x7E04] != TARGET.magic_word.to_bytes(4, "little")
   ):
     raise ProtocolError("intermediate live or staged sector context is invalid")
@@ -658,7 +658,7 @@ def validate_crc_intermediate(
     or crc.range_end != TARGET.crc_range_end
     or crc.adjust_address != TARGET.crc_adjust_address
     or crc.old_adjust_word != 0x0962887F
-    or crc.new_adjust_word != 0xD1F4CE24
+    or crc.new_adjust_word != 0x414F47CC
     or crc.patched_prefix_sw != (crc.new_adjust_word ^ 0xFFFFFFFF)
     or crc.original_sw_full != crc.original_dcra_raw
     or crc.original_sw_full == 0xFFFFFFFF

