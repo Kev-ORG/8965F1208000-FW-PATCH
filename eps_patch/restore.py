@@ -117,6 +117,113 @@ _PATCH_RESUME_NEXT = {
   "CRC_PRECHECKED": "CRC_ARMED",
   "CRC_COMMITTED": "VERIFY_PENDING",
 }
+_LEGACY_UNKNOWN_FRAME_ERROR = (
+  "PostTriggerTransportError: post-trigger destructive outcome is indeterminate: "
+  "invalid payload stream: unknown frame type 0x03"
+)
+_LEGACY_NRC31_ERROR = (
+  "PostTriggerTransportError: post-trigger destructive outcome is indeterminate: "
+  "RoutineControl negative response NRC 0x31; raw=037f313100000000"
+)
+
+
+def _legacy_crc_trigger_recovery_status(
+  transitions: list[dict[str, object]],
+) -> str | None:
+  """Recognize only the audited rejected-route CRC incident and its successor."""
+  if type(transitions) is not list:
+    return None
+  incidents = [
+    index for index, transition in enumerate(transitions)
+    if type(transition) is dict and transition.get("result") == "CRC_INDETERMINATE"
+  ]
+  if len(incidents) != 2:
+    return None
+  first_index, second_index = incidents
+  if (
+    second_index != first_index + 3
+    or [
+      transition.get("result") if type(transition) is dict else None
+      for transition in transitions[first_index + 1:second_index]
+    ] != ["CRC_PRECHECKED", "CRC_ARMED"]
+    or first_index < 1
+  ):
+    return None
+  first = transitions[first_index]
+  first_arm = transitions[first_index - 1]
+  reconciliation = transitions[first_index + 1]
+  second_arm = transitions[first_index + 2]
+  second = transitions[second_index]
+  probed = next(
+    (
+      transition for transition in transitions[:first_index]
+      if type(transition) is dict and transition.get("result") == "PROBED"
+    ),
+    None,
+  )
+  if probed is None:
+    return None
+  probed_evidence = probed.get("evidence")
+  reconciliation_evidence = reconciliation.get("evidence")
+  arm_evidence = second_arm.get("evidence")
+  first_arm_evidence = first_arm.get("evidence")
+  if not all(
+    type(evidence) is dict
+    for evidence in (
+      probed_evidence, first_arm_evidence, reconciliation_evidence, arm_evidence,
+    )
+  ):
+    return None
+  if (
+    first.get("error") != _LEGACY_UNKNOWN_FRAME_ERROR
+    or second.get("error") != _LEGACY_NRC31_ERROR
+    or reconciliation_evidence.get("classification") != "source"
+    or reconciliation_evidence.get("reconciled_from") != "CRC_INDETERMINATE"
+    or reconciliation_evidence.get("reconciled_sequence") != first.get("sequence")
+    or reconciliation_evidence.get("target_readback_sha256")
+      != probed_evidence.get("target_candidate_sha256")
+    or reconciliation_evidence.get("crc_readback_sha256")
+      != probed_evidence.get("crc_source_sha256")
+    or arm_evidence.get("operation") != 14
+    or arm_evidence.get("sector_base") != "0xf8000"
+    or arm_evidence.get("source_sha256") != probed_evidence.get("crc_source_sha256")
+    or arm_evidence.get("candidate_sha256")
+      != probed_evidence.get("crc_candidate_sha256")
+    or arm_evidence.get("candidate_crc32")
+      != first_arm_evidence.get("candidate_crc32")
+    or arm_evidence.get("payload") != first_arm_evidence.get("payload")
+  ):
+    return None
+  if second_index == len(transitions) - 1:
+    return "pending"
+  if second_index != len(transitions) - 2:
+    return None
+  successor = transitions[-1]
+  if type(successor) is not dict:
+    return None
+  evidence = successor.get("evidence")
+  result = successor.get("result")
+  expected_classification = {
+    "CRC_PRECHECKED": "source",
+    "CRC_COMMITTED": "candidate",
+  }.get(result)
+  if (
+    type(evidence) is not dict
+    or expected_classification is None
+    or evidence.get("legacy_trigger_recovery") != "nrc31-route-v1"
+    or evidence.get("legacy_trigger_rejection_sequence") != second.get("sequence")
+    or evidence.get("reconciled_from") != "CRC_INDETERMINATE"
+    or evidence.get("reconciled_sequence") != second.get("sequence")
+    or evidence.get("classification") != expected_classification
+    or evidence.get("target_readback_sha256")
+      != probed_evidence.get("target_candidate_sha256")
+    or evidence.get("crc_readback_sha256") != probed_evidence.get(
+      "crc_source_sha256" if expected_classification == "source"
+      else "crc_candidate_sha256"
+    )
+  ):
+    return None
+  return "consumed"
 
 
 class RestoreError(RuntimeError):
@@ -696,12 +803,28 @@ def _load_patch_state(path: Path, timestamp: str) -> tuple[dict[str, object], by
     for previous, current in zip(transitions, transitions[1:])
   ):
     raise RestoreError("patch state transition history is not reachable")
+  legacy_recovery = _legacy_crc_trigger_recovery_status(transitions)
+  crc_indeterminate_total = sum(
+    transition["result"] == "CRC_INDETERMINATE" for transition in transitions
+  )
+  incident_errors = {
+    transition.get("error")
+    for transition in transitions
+    if transition["result"] == "CRC_INDETERMINATE"
+  }
+  if (
+    crc_indeterminate_total == 2
+    and legacy_recovery is None
+    and incident_errors & {_LEGACY_UNKNOWN_FRAME_ERROR, _LEGACY_NRC31_ERROR}
+  ):
+    raise RestoreError("patch state exceeds the one-time CRC retry limit")
   indeterminate_count = 0
   for previous, current in zip(transitions, transitions[1:]):
     if previous["result"] == "CRC_INDETERMINATE":
       indeterminate_count += 1
       if (
         indeterminate_count != 1
+        and legacy_recovery != "consumed"
         and current["result"] in {"CRC_PRECHECKED", "CRC_COMMITTED"}
       ):
         raise RestoreError("patch state exceeds the one-time CRC retry limit")

@@ -152,6 +152,153 @@ def _probe_case(tmp_path: Path):
   )
 
 
+@pytest.mark.parametrize("classification", ("source", "candidate"))
+def test_patch_state_audit_accepts_exact_pending_and_consumed_legacy_history(
+  tmp_path, classification,
+):
+  from eps_patch.restore import (
+    _legacy_crc_trigger_recovery_status, _load_patch_state,
+  )
+
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, crc_candidate,
+  ) = patch_fx._legacy_crc_trigger_case(tmp_path)
+  pending, pending_raw = _load_patch_state(state_path, state_path.parent.name)
+  assert pending_raw == state_path.read_bytes()
+  assert _legacy_crc_trigger_recovery_status(pending["transitions"]) == "pending"
+  crc_live = {"source": crc_source, "candidate": crc_candidate}[classification]
+  patch_fx._invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=patch_fx.FakeTransport(
+      "legacy-reconcile", [], identity,
+      patch_fx._live_read_result(target_candidate, crc_live), boot=True,
+    ),
+    events=[],
+    confirmations=[],
+    powers=[],
+  )
+
+  consumed, consumed_raw = _load_patch_state(state_path, state_path.parent.name)
+  assert consumed_raw == state_path.read_bytes()
+  assert consumed["result"] == {
+    "source": "CRC_PRECHECKED", "candidate": "CRC_COMMITTED",
+  }[classification]
+  assert _legacy_crc_trigger_recovery_status(consumed["transitions"]) == "consumed"
+
+
+@pytest.mark.parametrize(
+  "mutation",
+  (
+    "nrc22", "wrong-raw", "first-error", "missing-classification",
+    "changed-classification", "wrong-reconciled-sequence",
+    "reconcile-target-hash", "reconcile-crc-hash", "arm-operation",
+    "arm-base", "arm-source", "arm-candidate", "arm-crc32", "arm-payload",
+    "extra-transition",
+  ),
+)
+def test_patch_state_audit_rejects_every_legacy_history_near_miss(
+  tmp_path, mutation,
+):
+  from eps_patch.restore import RestoreError, _load_patch_state
+
+  _layout, state_path, *_case = patch_fx._legacy_crc_trigger_case(tmp_path)
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  patch_fx._mutate_legacy_state(state, mutation)
+  state_path.write_text(json.dumps(state), encoding="utf-8")
+
+  with pytest.raises(RestoreError):
+    _load_patch_state(state_path, state_path.parent.name)
+
+
+@pytest.mark.parametrize("mutation", ("marker", "rejection-sequence"))
+def test_patch_state_audit_rejects_mutated_consumption_marker(tmp_path, mutation):
+  from eps_patch.restore import RestoreError, _load_patch_state
+
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, _crc_candidate,
+  ) = patch_fx._legacy_crc_trigger_case(tmp_path)
+  patch_fx._invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=patch_fx.FakeTransport(
+      "legacy-reconcile", [], identity,
+      patch_fx._live_read_result(target_candidate, crc_source), boot=True,
+    ),
+    events=[],
+    confirmations=[],
+    powers=[],
+  )
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  if mutation == "marker":
+    state["transitions"][-1]["evidence"]["legacy_trigger_recovery"] = (
+      "nrc31-route-v2"
+    )
+  else:
+    state["transitions"][-1]["evidence"][
+      "legacy_trigger_rejection_sequence"
+    ] = 9
+  state_path.write_text(json.dumps(state), encoding="utf-8")
+
+  with pytest.raises(RestoreError, match="one-time CRC retry limit"):
+    _load_patch_state(state_path, state_path.parent.name)
+
+
+def test_patch_state_audit_retains_generic_second_indeterminate_retry_rejection(
+  tmp_path,
+):
+  from eps_patch.patch import PatchError
+  from eps_patch.restore import RestoreError, _load_patch_state
+
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, _crc_candidate,
+  ) = patch_fx._crc_indeterminate_case(tmp_path)
+  patch_fx._invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=patch_fx.FakeTransport(
+      "reconcile", [], identity,
+      patch_fx._live_read_result(target_candidate, crc_source), boot=True,
+    ),
+    events=[],
+    confirmations=[],
+    powers=[],
+  )
+  with pytest.raises(PatchError):
+    patch_fx._invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=patch_fx.FakeTransport(
+        "retry-writer", [], identity, None,
+        failure=TimeoutError("second response lost"), boot=True,
+      ),
+      events=[],
+      confirmations=[],
+      powers=[],
+    )
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  transition = {
+    "sequence": 11,
+    "result": "CRC_PRECHECKED",
+    "recorded_at": state["updated_at"],
+    "evidence": {"state": "generic second retry"},
+  }
+  state["transitions"].append(transition)
+  state["sequence"] = 11
+  state["result"] = "CRC_PRECHECKED"
+  state["restore_order"] = ["target"]
+  state["power_cycle"] = {
+    "completed_state": "CRC_PRECHECKED", "next_state": "CRC_ARMED",
+  }
+  state_path.write_text(json.dumps(state), encoding="utf-8")
+
+  with pytest.raises(RestoreError, match="one-time CRC retry limit"):
+    _load_patch_state(state_path, state_path.parent.name)
+
+
 @pytest.mark.parametrize(
   ("state", "expected"),
   [

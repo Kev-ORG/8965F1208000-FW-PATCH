@@ -22,7 +22,9 @@ from eps_patch.protocol import (
   RegionResult,
   StreamResult,
 )
-from eps_patch.transport import BootloaderIdentity, EcuIdentity
+from eps_patch.transport import (
+  BootloaderIdentity, EcuIdentity, PostTriggerTransportError,
+)
 
 import test_evidence as evidence_fx
 
@@ -31,6 +33,14 @@ OLD_ADJUSTMENT = TARGET.crc_original_adjust_word.to_bytes(4, "little")
 NEW_ADJUSTMENT = TARGET.crc_patched_adjust_word.to_bytes(4, "little")
 LIVE_READ_ENVELOPE_SHA256 = (
   "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+)
+LEGACY_UNKNOWN_FRAME_ERROR = (
+  "PostTriggerTransportError: post-trigger destructive outcome is indeterminate: "
+  "invalid payload stream: unknown frame type 0x03"
+)
+LEGACY_NRC31_ERROR = (
+  "PostTriggerTransportError: post-trigger destructive outcome is indeterminate: "
+  "RoutineControl negative response NRC 0x31; raw=037f313100000000"
 )
 
 
@@ -285,7 +295,7 @@ def _templates():
   }
 
 
-def _run_patch(tmp_path, *, failure_stage=None):
+def _run_patch(tmp_path, *, failure_stage=None, crc_writer_failure=None):
   from eps_patch.patch import PatchError, run_patch
 
   layout = ArtifactLayout(tmp_path / "artifacts")
@@ -335,7 +345,10 @@ def _run_patch(tmp_path, *, failure_stage=None):
     FakeTransport(
       "crc-writer", events, identity,
       _writer_result(OP_WRITE_CRC_CANDIDATE, target.crc_sector_base, crc_candidate),
-      failure=TimeoutError("CRC response lost") if failure_stage == "crc-armed" else None,
+      failure=(
+        crc_writer_failure or TimeoutError("CRC response lost")
+        if failure_stage == "crc-armed" else None
+      ),
       boot=True,
     ),
     FakeTransport("verify", events, identity, final),
@@ -478,6 +491,142 @@ def _crc_indeterminate_case(tmp_path):
   )
 
 
+def _legacy_crc_trigger_case(tmp_path):
+  from eps_patch.patch import PatchError
+
+  first_failure = PostTriggerTransportError(RuntimeError(
+    "invalid payload stream: unknown frame type 0x03"
+  ))
+  result, state_path, _events, _confirmations = _run_patch(
+    tmp_path,
+    failure_stage="crc-armed",
+    crc_writer_failure=first_failure,
+  )
+  assert result is None
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target_source = layout.target_backup.read_bytes()
+  crc_source = layout.crc_backup.read_bytes()
+  target_candidate = bytearray(target_source)
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target_candidate = bytes(target_candidate)
+  crc_candidate = bytearray(crc_source)
+  crc_candidate[
+    TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4
+  ] = NEW_ADJUSTMENT
+  crc_candidate = bytes(crc_candidate)
+  target = replace(
+    TARGET,
+    original_sha256=hashlib.sha256(target_source).hexdigest(),
+    patched_sha256=hashlib.sha256(target_candidate).hexdigest(),
+  )
+  identity = EcuIdentity(
+    part_number=target.part_number,
+    application_software_id=target.application_software_id,
+    boot_software_id=target.boot_software_id,
+    panda_serial="test-panda",
+  )
+  events = []
+  _invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=FakeTransport(
+      "first-reconcile",
+      events,
+      identity,
+      _live_read_result(target_candidate, crc_source),
+      boot=True,
+    ),
+    events=events,
+    confirmations=[],
+    powers=[],
+  )
+  second_failure = PostTriggerTransportError(RuntimeError(
+    "RoutineControl negative response NRC 0x31; raw=037f313100000000"
+  ))
+  with pytest.raises(PatchError, match="CRC_INDETERMINATE"):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=FakeTransport(
+        "second-writer", events, identity, None,
+        failure=second_failure, boot=True,
+      ),
+      events=events,
+      confirmations=[],
+      powers=[],
+    )
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert [transition["result"] for transition in state["transitions"]] == [
+    "STARTED", "PROBED", "TARGET_PRECHECKED", "TARGET_ARMED",
+    "TARGET_COMMITTED", "CRC_PRECHECKED", "CRC_ARMED",
+    "CRC_INDETERMINATE", "CRC_PRECHECKED", "CRC_ARMED",
+    "CRC_INDETERMINATE",
+  ]
+  assert state["transitions"][7]["error"] == LEGACY_UNKNOWN_FRAME_ERROR
+  assert state["transitions"][10]["error"] == LEGACY_NRC31_ERROR
+  return (
+    layout, state_path, target, identity, target_source, crc_source,
+    target_candidate, crc_candidate,
+  )
+
+
+def _mutate_legacy_state(state, mutation):
+  transitions = state["transitions"]
+  probed = transitions[1]["evidence"]
+  if mutation == "nrc22":
+    transitions[10]["error"] = LEGACY_NRC31_ERROR.replace("0x31", "0x22", 1)
+  elif mutation == "wrong-raw":
+    transitions[10]["error"] = LEGACY_NRC31_ERROR.replace(
+      "037f313100000000", "037f313101000000",
+    )
+  elif mutation == "first-error":
+    transitions[7]["error"] = LEGACY_UNKNOWN_FRAME_ERROR + " "
+  elif mutation == "missing-classification":
+    transitions[8]["evidence"].pop("classification")
+  elif mutation == "changed-classification":
+    transitions[8]["evidence"]["classification"] = "candidate"
+  elif mutation == "wrong-reconciled-sequence":
+    transitions[8]["evidence"]["reconciled_sequence"] = 6
+  elif mutation == "reconcile-target-hash":
+    transitions[8]["evidence"]["target_readback_sha256"] = probed[
+      "target_source_sha256"
+    ]
+  elif mutation == "reconcile-crc-hash":
+    transitions[8]["evidence"]["crc_readback_sha256"] = probed[
+      "crc_candidate_sha256"
+    ]
+  elif mutation == "arm-operation":
+    transitions[9]["evidence"]["operation"] = OP_WRITE_TARGET_CANDIDATE
+  elif mutation == "arm-base":
+    transitions[9]["evidence"]["sector_base"] = "0x60000"
+  elif mutation == "arm-source":
+    transitions[9]["evidence"]["source_sha256"] = probed["crc_candidate_sha256"]
+  elif mutation == "arm-candidate":
+    transitions[9]["evidence"]["candidate_sha256"] = probed["crc_source_sha256"]
+  elif mutation == "arm-crc32":
+    transitions[9]["evidence"]["candidate_crc32"] = "0x00000000"
+  elif mutation == "arm-payload":
+    transitions[9]["evidence"]["payload"]["intent_sha256"] = "0" * 64
+  elif mutation == "extra-transition":
+    extra = {
+      "sequence": 11,
+      "result": "CRC_PRECHECKED",
+      "recorded_at": state["updated_at"],
+      "evidence": {"state": "unreviewed extra reconciliation"},
+    }
+    transitions.append(extra)
+    state["sequence"] = 11
+    state["result"] = "CRC_PRECHECKED"
+    state["restore_order"] = ["target"]
+    state["power_cycle"] = {
+      "completed_state": "CRC_PRECHECKED",
+      "next_state": "CRC_ARMED",
+    }
+  else:
+    raise AssertionError(f"unknown legacy state mutation: {mutation}")
+  return state
+
+
 def _invoke_patch_resume(
   *, layout, target, transport, events, confirmations, powers,
 ):
@@ -601,6 +750,193 @@ def test_patch_reconciles_complete_crc_candidate_without_rewriting(tmp_path):
     ("verify", "payload", OP_VERIFY_CRC),
   ]
   assert confirmations == []
+
+
+@pytest.mark.parametrize(
+  ("classification", "expected_result", "expected_order", "expected_checkpoint"),
+  (
+    (
+      "source", "CRC_PRECHECKED", ["target"],
+      {"completed_state": "CRC_PRECHECKED", "next_state": "CRC_ARMED"},
+    ),
+    (
+      "candidate", "CRC_COMMITTED", ["crc", "target"],
+      {"completed_state": "CRC_COMMITTED", "next_state": "VERIFY_PENDING"},
+    ),
+  ),
+)
+def test_exact_legacy_nrc_history_gets_one_read_only_reconciliation(
+  tmp_path, classification, expected_result, expected_order, expected_checkpoint,
+):
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, crc_candidate,
+  ) = _legacy_crc_trigger_case(tmp_path)
+  events = []
+  confirmations = []
+  powers = []
+  crc_live = {"source": crc_source, "candidate": crc_candidate}[classification]
+
+  assert _invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=FakeTransport(
+      "legacy-reconcile", events, identity,
+      _live_read_result(target_candidate, crc_live), boot=True,
+    ),
+    events=events,
+    confirmations=confirmations,
+    powers=powers,
+  ) == state_path
+
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  evidence = state["transitions"][-1]["evidence"]
+  assert state["result"] == expected_result
+  assert state["restore_order"] == expected_order
+  assert state["power_cycle"] == expected_checkpoint
+  assert evidence["legacy_trigger_recovery"] == "nrc31-route-v1"
+  assert evidence["legacy_trigger_rejection_sequence"] == 10
+  assert evidence["target_readback_sha256"] == hashlib.sha256(
+    target_candidate,
+  ).hexdigest()
+  assert evidence["crc_readback_sha256"] == hashlib.sha256(crc_live).hexdigest()
+  assert [
+    event[2] for event in events if len(event) > 2 and event[1] == "payload"
+  ] == [OP_LIVE_READ]
+  assert confirmations == []
+  assert len(powers) == 1
+  assert f"{expected_checkpoint['completed_state']} -> " in powers[0]
+
+
+@pytest.mark.parametrize(
+  "mutation",
+  (
+    "nrc22", "wrong-raw", "first-error", "missing-classification",
+    "changed-classification", "wrong-reconciled-sequence",
+    "reconcile-target-hash", "reconcile-crc-hash", "arm-operation",
+    "arm-base", "arm-source", "arm-candidate", "arm-crc32", "arm-payload",
+    "extra-transition",
+  ),
+)
+def test_legacy_recovery_structural_near_miss_stops_before_hardware(
+  tmp_path, mutation,
+):
+  from eps_patch.patch import PatchError
+
+  layout, state_path, target, *_case = _legacy_crc_trigger_case(tmp_path)
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  _mutate_legacy_state(state, mutation)
+  state_path.write_text(json.dumps(state), encoding="utf-8")
+  mutated_bytes = state_path.read_bytes()
+  events = []
+
+  with pytest.raises(PatchError):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=lambda: events.append("transport"),
+      events=events,
+      confirmations=events,
+      powers=events,
+    )
+
+  assert state_path.read_bytes() == mutated_bytes
+  assert events == []
+
+
+@pytest.mark.parametrize(
+  "failure", ("partial-crc", "source-target", "identity", "transport"),
+)
+def test_legacy_recovery_live_read_failure_never_mutates_state(tmp_path, failure):
+  from eps_patch.patch import PatchError
+
+  (
+    layout, state_path, target, identity, target_source, crc_source,
+    target_candidate, _crc_candidate,
+  ) = _legacy_crc_trigger_case(tmp_path)
+  original_state = state_path.read_bytes()
+  events = []
+  confirmations = []
+  current_identity = identity
+  transport_failure = None
+  live_target = target_candidate
+  live_crc = crc_source
+  if failure == "partial-crc":
+    partial = bytearray(crc_source)
+    partial[0x1234] ^= 1
+    live_crc = bytes(partial)
+  elif failure == "source-target":
+    live_target = target_source
+  elif failure == "identity":
+    current_identity = replace(identity, panda_serial="other-panda")
+  else:
+    transport_failure = TimeoutError("legacy live-read response lost")
+
+  with pytest.raises(PatchError):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=FakeTransport(
+        "legacy-reconcile", events, current_identity,
+        _live_read_result(live_target, live_crc),
+        failure=transport_failure, boot=True,
+      ),
+      events=events,
+      confirmations=confirmations,
+      powers=[],
+    )
+
+  assert state_path.read_bytes() == original_state
+  assert confirmations == []
+  assert ("legacy-reconcile", "open") in events
+
+
+def test_consumed_legacy_exception_cannot_authorize_another_recovery(tmp_path):
+  from eps_patch.patch import PatchError
+
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, _crc_candidate,
+  ) = _legacy_crc_trigger_case(tmp_path)
+  _invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=FakeTransport(
+      "legacy-reconcile", [], identity,
+      _live_read_result(target_candidate, crc_source), boot=True,
+    ),
+    events=[],
+    confirmations=[],
+    powers=[],
+  )
+  with pytest.raises(PatchError, match="CRC_INDETERMINATE"):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=FakeTransport(
+        "corrected-route-writer", [], identity, None,
+        failure=PostTriggerTransportError(TimeoutError("response lost")),
+        boot=True,
+      ),
+      events=[],
+      confirmations=[],
+      powers=[],
+    )
+  state_after_writer = state_path.read_bytes()
+  blocked = []
+
+  with pytest.raises(PatchError):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=lambda: blocked.append("transport"),
+      events=blocked,
+      confirmations=blocked,
+      powers=blocked,
+    )
+
+  assert state_path.read_bytes() == state_after_writer
+  assert blocked == []
 
 
 @pytest.mark.parametrize("failure", ("partial", "identity", "transport"))

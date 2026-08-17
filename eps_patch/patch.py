@@ -249,6 +249,16 @@ def _run_patch_locked(
     entry = PatchState(state["result"])
 
   if entry is PatchState.CRC_INDETERMINATE:
+    from .restore import _legacy_crc_trigger_recovery_status
+
+    legacy_recovery = _legacy_crc_trigger_recovery_status(state["transitions"])
+    if legacy_recovery == "pending":
+      _validate_legacy_crc_trigger_writer_evidence(
+        state=state,
+        candidate=candidate,
+        target=target,
+        template=writer_templates["write_crc_candidate"],
+      )
     try:
       preflight()
       with transport_factory() as transport:
@@ -281,18 +291,24 @@ def _run_patch_locked(
         PatchState.VERIFY_PENDING.value,
       )
     live_target, live_crc = _regions(live, target, "CRC reconciliation")
+    reconciliation_evidence = {
+      "identity": _boot_identity_record(boot_identity),
+      "reconciled_from": PatchState.CRC_INDETERMINATE.value,
+      "reconciled_sequence": state["sequence"],
+      "classification": classification,
+      "target_readback_sha256": sha256_bytes(live_target),
+      "crc_readback_sha256": sha256_bytes(live_crc),
+      "payload": _payload_record(patch_payloads["live_read"]),
+    }
+    if legacy_recovery == "pending":
+      reconciliation_evidence.update({
+        "legacy_trigger_recovery": "nrc31-route-v1",
+        "legacy_trigger_rejection_sequence": state["sequence"],
+      })
     path = recorder.record(
       reconciled_state,
       restore_order=restore_order,
-      evidence={
-        "identity": _boot_identity_record(boot_identity),
-        "reconciled_from": PatchState.CRC_INDETERMINATE.value,
-        "reconciled_sequence": state["sequence"],
-        "classification": classification,
-        "target_readback_sha256": sha256_bytes(live_target),
-        "crc_readback_sha256": sha256_bytes(live_crc),
-        "payload": _payload_record(patch_payloads["live_read"]),
-      },
+      evidence=reconciliation_evidence,
       power_cycle=checkpoint,
     )
     request_power_cycle(
@@ -758,6 +774,52 @@ def _candidate_from_probe(
   return candidate
 
 
+def _validate_legacy_crc_trigger_writer_evidence(
+  *,
+  state: dict[str, object],
+  candidate: CrcCandidate,
+  target: TargetManifest,
+  template: bytes,
+) -> None:
+  target_candidate_crc = binascii.crc32(candidate.target_final)
+  source_crc_crc = binascii.crc32(candidate.crc_source)
+  crc_candidate_crc = binascii.crc32(candidate.crc_final)
+  intent = CandidateWriterIntent.for_crc(
+    live_target_crc32=target_candidate_crc,
+    live_crc_crc32=source_crc_crc,
+    candidate_crc32=crc_candidate_crc,
+    live_target_instruction=target.patched_instruction,
+    live_adjustment=candidate.old_adjustment,
+    candidate_context=CANDIDATE_ADJUSTMENT,
+    candidate_adjustment=candidate.new_adjustment,
+  )
+  try:
+    expected_writer = build_crc_candidate_payload_image(
+      template=template,
+      manifest=REVIEWED_TEMPLATE_MANIFESTS["write_crc_candidate"],
+      intent=intent,
+    )
+  except Exception as exc:
+    raise PatchError("legacy CRC writer evidence cannot be reconstructed") from exc
+  transitions = state.get("transitions")
+  if type(transitions) is not list or len(transitions) < 2:
+    raise PatchError("legacy CRC writer evidence is incomplete")
+  second_arm = transitions[-2]
+  evidence = second_arm.get("evidence") if type(second_arm) is dict else None
+  expected = {
+    "operation": OP_WRITE_CRC_CANDIDATE,
+    "sector_base": f"0x{target.crc_sector_base:x}",
+    "source_sha256": sha256_bytes(candidate.crc_source),
+    "candidate_sha256": sha256_bytes(candidate.crc_final),
+    "candidate_crc32": f"0x{crc_candidate_crc:08x}",
+    "payload": _writer_payload_record(expected_writer),
+  }
+  if type(evidence) is not dict or any(
+    evidence.get(name) != value for name, value in expected.items()
+  ):
+    raise PatchError("legacy CRC writer evidence does not match the reviewed writer")
+
+
 def _reject_unresolved_patch_incident(
   layout: ArtifactLayout,
   *,
@@ -795,6 +857,7 @@ def _select_patch_resume(
   from .restore import (
     RestoreError,
     _ATTEMPT_TIMESTAMP,
+    _legacy_crc_trigger_recovery_status,
     _load_patch_state,
     _recoverable_restore_plans,
     _reject_prior_restore,
@@ -829,16 +892,17 @@ def _select_patch_resume(
       transition["result"] == PatchState.CRC_INDETERMINATE.value
       for transition in state["transitions"]
     )
+    legacy_recovery = _legacy_crc_trigger_recovery_status(state["transitions"])
     planned_resume = (
       state["schema"] == 2
       and state["power_cycle"] is not None
-      and indeterminate_count <= 1
+      and (indeterminate_count <= 1 or legacy_recovery == "consumed")
     )
     indeterminate_resume = (
       state["schema"] == 2
       and state["result"] == PatchState.CRC_INDETERMINATE.value
       and state["power_cycle"] is None
-      and indeterminate_count == 1
+      and (indeterminate_count == 1 or legacy_recovery == "pending")
     )
     if not planned_resume and not indeterminate_resume:
       continue
