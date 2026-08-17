@@ -142,12 +142,6 @@ class FakeTransport:
     self.events.append((self.label, "boot-identity"))
     return BootloaderIdentity(self.identity.boot_software_id, self.identity.panda_serial)
 
-  def run_staged_payload(self, _image, *, ram_blob, operation, new_uds):
-    self.events.append((self.label, "staged", operation, ram_blob.data))
-    if self.failure is not None:
-      raise self.failure
-    return self.result
-
   def run_payload(self, _image, *, operation, new_uds):
     self.events.append((self.label, "payload", operation))
     if self.failure is not None:

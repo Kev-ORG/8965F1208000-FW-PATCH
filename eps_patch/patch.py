@@ -39,7 +39,7 @@ from .protocol import (
   require_candidate_writer_pass,
   validate_crc_intermediate,
 )
-from .transport import BootloaderIdentity, EcuIdentity, RamBlob
+from .transport import BootloaderIdentity, EcuIdentity
 
 
 CRC_PROBE_ENVELOPE_SHA256 = (
@@ -277,9 +277,8 @@ def _run_patch_locked(
       with transport_factory() as transport:
         current_identity = transport.read_identity()
         _require_application_identity(current_identity, trusted.identity, target)
-        target_precheck = transport.run_staged_payload(
+        target_precheck = transport.run_payload(
           patch_payloads["crc_probe"],
-          ram_blob=RamBlob(target.sram_buffer, candidate.target_final),
           operation=OP_CRC_PROBE,
           new_uds=new_uds,
         )
@@ -344,9 +343,8 @@ def _run_patch_locked(
           },
         )
         phase = PatchState.TARGET_ARMED
-        target_result = transport.run_staged_payload(
+        target_result = transport.run_payload(
           target_writer.payload,
-          ram_blob=RamBlob(target.sram_buffer, candidate.target_final),
           operation=OP_WRITE_TARGET_CANDIDATE,
           new_uds=new_uds,
         )
@@ -378,9 +376,8 @@ def _run_patch_locked(
       with transport_factory() as transport:
         boot_identity = transport.read_bootloader_identity()
         _require_boot_identity(boot_identity, trusted.identity)
-        crc_precheck = transport.run_staged_payload(
+        crc_precheck = transport.run_payload(
           patch_payloads["crc_intermediate"],
-          ram_blob=RamBlob(target.sram_buffer, candidate.crc_final),
           operation=OP_CRC_INTERMEDIATE,
           new_uds=new_uds,
         )
@@ -450,9 +447,8 @@ def _run_patch_locked(
           },
         )
         phase = PatchState.CRC_ARMED
-        crc_result = transport.run_staged_payload(
+        crc_result = transport.run_payload(
           crc_writer.payload,
-          ram_blob=RamBlob(target.sram_buffer, candidate.crc_final),
           operation=OP_WRITE_CRC_CANDIDATE,
           new_uds=new_uds,
         )

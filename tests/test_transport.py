@@ -193,6 +193,39 @@ def test_transport_uploads_only_hash_checked_envelope_with_private_download():
   assert uds.calls[-1][0] == "routine"
 
 
+def test_specialized_writer_uses_one_fixed_four_kib_download(monkeypatch):
+  from eps_patch.manifest import TARGET
+  from eps_patch.payload import SpecializedPayloadImage
+  from eps_patch.protocol import OP_WRITE_TARGET_CANDIDATE
+  from eps_patch.transport import EcuTransport
+
+  envelope = bytes(range(256)) * 16
+  image = object.__new__(SpecializedPayloadImage)
+  object.__setattr__(image, "envelope", envelope)
+  object.__setattr__(image, "sha256", hashlib.sha256(envelope).hexdigest())
+  object.__setattr__(image, "sector_base", TARGET.sector_base)
+  monkeypatch.setattr(SpecializedPayloadImage, "validate", lambda _self: b"")
+  with EcuTransport(bindings=fake_bindings([])) as transport:
+    transport.collect_stream = lambda *, operation: ("stream", operation)
+    assert transport.run_payload(
+      image, operation=OP_WRITE_TARGET_CANDIDATE, new_uds=False,
+    ) == ("stream", OP_WRITE_TARGET_CANDIDATE)
+    uds = FakeUds.instances[-1]
+
+  downloads = [call for call in uds.calls if call[0] == "private_request"]
+  assert downloads == [(
+    "private_request", 0x34,
+    bytes.fromhex("01 46 01 00 fe bf 00 00 00 00 10 00"),
+  )]
+
+
+def test_transport_has_no_sector_staging_api():
+  import eps_patch.transport as transport
+
+  assert not hasattr(transport, "RamBlob")
+  assert not hasattr(transport.EcuTransport, "run_staged_payload")
+
+
 def test_transport_honors_negotiated_request_download_block_length():
   from eps_patch.transport import EcuTransport
 
@@ -237,58 +270,6 @@ def test_live_read_trigger_uses_fixed_default_base_and_rejects_override():
   assert isotp_calls[0][0][1][-8:] == struct.pack("!II", 0x60000, 0x8000)
 
 
-@pytest.mark.parametrize(
-  "address,length",
-  ((0xFEBF1000, 0x8000), (0xFEBF2000, 0x7FFF), (0xFEBF9000, 0x8000)),
-)
-def test_ram_blob_rejects_overlap_or_wrong_length(address, length):
-  from eps_patch.transport import RamBlob, TransportError
-
-  with pytest.raises(TransportError, match="one exact sector"):
-    RamBlob(address, bytes(length)).validate()
-
-
-@pytest.mark.parametrize("operation", (1, 8, 10, 11, 255))
-def test_staged_upload_rejects_unsupported_operation_before_uds(operation):
-  from eps_patch.transport import EcuTransport, RamBlob, TransportError
-
-  envelope = bytes(0x1000)
-  image = SimpleNamespace(
-    name="crc_probe",
-    envelope=envelope,
-    sha256=hashlib.sha256(envelope).hexdigest(),
-    validate=lambda *, target: None,
-  )
-  with EcuTransport(bindings=fake_bindings([])) as transport:
-    with pytest.raises(TransportError, match="unsupported staged operation"):
-      transport.run_staged_payload(
-        image,
-        ram_blob=RamBlob(0xFEBF2000, bytes(0x8000)),
-        operation=operation,
-        new_uds=False,
-      )
-    assert FakeUds.instances[-1].calls == []
-
-
-def test_staged_upload_rejects_self_consistent_unpinned_envelope_before_uds():
-  from eps_patch.protocol import OP_CRC_PROBE
-  from eps_patch.transport import EcuTransport, RamBlob, TransportError
-
-  envelope = bytes(0x1000)
-  image = SimpleNamespace(
-    name="crc_probe",
-    envelope=envelope,
-    sha256=hashlib.sha256(envelope).hexdigest(),
-  )
-  with EcuTransport(bindings=fake_bindings([])) as transport:
-    with pytest.raises(TransportError, match="exact envelope pin"):
-      transport.run_staged_payload(
-        image,
-        ram_blob=RamBlob(0xFEBF2000, bytes(0x8000)),
-        operation=OP_CRC_PROBE,
-        new_uds=False,
-      )
-    assert FakeUds.instances[-1].calls == []
 @pytest.mark.parametrize("response", [b"", b"\x10\x04", b"\x21\x04\x02", b"\x20\x00\x01"])
 def test_transport_rejects_malformed_request_download_response(response):
   from eps_patch.transport import EcuTransport, TransportError

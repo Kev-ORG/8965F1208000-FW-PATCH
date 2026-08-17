@@ -601,14 +601,6 @@ class FakeRestoreTransport:
     self.events.append((self.label, "identity"))
     return self.identity
 
-  def run_staged_payload(self, image, *, ram_blob, operation, new_uds):
-    self.events.append((self.label, "staged", operation, ram_blob.data, image.name))
-    assert operation == self.operation
-    assert new_uds is False
-    if self.failure is not None:
-      raise self.failure
-    return self.result
-
   def run_payload(self, image, *, operation, new_uds):
     self.events.append((self.label, "payload", operation, image.name))
     assert operation == self.operation
@@ -788,12 +780,14 @@ def test_restore_crc_first_then_target_with_fresh_identity_and_exact_confirmatio
   assert state["result"] == "PASS"
   assert state["completed_sector_bases"] == ["0xf8000", "0x60000"]
   assert state["incident_state_sha256"] == sha256_bytes(incident_path.read_bytes())
-  staged = [event for event in events if len(event) > 2 and event[1] == "staged"]
-  assert [event[2] for event in staged] == [
-    OP_RAM_ECHO, OP_RESTORE_SECTOR, OP_RAM_ECHO, OP_RESTORE_SECTOR,
+  payloads = [event for event in events if len(event) > 2 and event[1] == "payload"]
+  assert [event[2] for event in payloads] == [
+    OP_RAM_ECHO, OP_LIVE_READ, OP_RESTORE_SECTOR,
+    OP_RAM_ECHO, OP_LIVE_READ, OP_RESTORE_SECTOR,
   ]
-  assert [event[4] for event in staged] == [
-    "ram_echo", "restore_sector", "ram_echo", "restore_sector",
+  assert [event[3] for event in payloads] == [
+    "ram_echo", "live_read", "restore_sector",
+    "ram_echo", "live_read", "restore_sector",
   ]
   assert len(confirmations) == 2
   assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")
@@ -833,7 +827,10 @@ def test_restore_live_reads_both_sectors_before_each_writer_arm(tmp_path):
   )
 
   assert report is not None
-  live_events = [event for event in events if len(event) > 1 and event[1] == "payload"]
+  live_events = [
+    event for event in events
+    if len(event) > 2 and event[1] == "payload" and event[2] == OP_LIVE_READ
+  ]
   assert [(event[0], event[2], event[3]) for event in live_events] == [
     ("crc-live", OP_LIVE_READ, "live_read"),
     ("target-live", OP_LIVE_READ, "live_read"),
@@ -878,7 +875,7 @@ def test_restore_rejects_contradictory_live_state_before_confirmation_or_writer(
   assert json.loads(state_path.read_text(encoding="utf-8"))["result"] == "FAILED"
   assert confirmations == []
   assert not any(
-    len(event) > 2 and event[1] == "staged" and event[2] == OP_RESTORE_SECTOR
+    len(event) > 2 and event[1] == "payload" and event[2] == OP_RESTORE_SECTOR
     for event in events
   )
   assert crc_source != crc_candidate
@@ -896,7 +893,7 @@ def test_live_read_failure_after_crc_commit_is_terminal_indeterminate(tmp_path):
   assert state["completed_sector_bases"] == ["0xf8000"]
   assert len(confirmations) == 1
   assert not any(
-    event[0] == "target-writer" and len(event) > 1 and event[1] == "staged"
+    event[0] == "target-writer" and len(event) > 1 and event[1] == "payload"
     for event in events
   )
 
@@ -948,7 +945,7 @@ def test_restore_rejects_live_identity_mismatch_without_flash_write(tmp_path):
   assert report is None
   assert json.loads(state_path.read_text(encoding="utf-8"))["result"] == "FAILED"
   assert not any(
-    len(event) > 2 and event[1] == "staged" and event[2] == OP_RESTORE_SECTOR
+    len(event) > 2 and event[1] == "payload" and event[2] == OP_RESTORE_SECTOR
     for event in events
   )
 
@@ -964,7 +961,7 @@ def test_restore_requires_incident_bound_confirmation_before_writer_arm(tmp_path
   assert len(confirmations) == 1
   assert json.loads(state_path.read_text(encoding="utf-8"))["result"] == "FAILED"
   assert not any(
-    len(event) > 2 and event[1] == "staged" and event[2] == OP_RESTORE_SECTOR
+    len(event) > 2 and event[1] == "payload" and event[2] == OP_RESTORE_SECTOR
     for event in events
   )
 
@@ -1247,7 +1244,7 @@ def test_post_arm_restore_uncertainty_is_terminal_indeterminate_without_retry(
   assert state["external_recovery_required"] is True
   restore_calls = [
     event for event in events
-    if len(event) > 2 and event[1] == "staged" and event[2] == OP_RESTORE_SECTOR
+    if len(event) > 2 and event[1] == "payload" and event[2] == OP_RESTORE_SECTOR
   ]
   assert len(restore_calls) == 1
 

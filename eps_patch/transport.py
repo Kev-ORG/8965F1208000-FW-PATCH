@@ -33,30 +33,6 @@ class PostTriggerTransportError(TransportError):
     super().__init__(f"post-trigger destructive outcome is indeterminate: {primary}")
 
 
-STAGED_ENVELOPE_SHA256 = {
-  OP_CRC_PROBE: "bb8065479d339129f8ee1bfad44ed67c730504bf95fd13696eff7ea857fd36aa",
-  OP_RAM_ECHO: "c938bfbd82e8f55c1597f0238c5d55213eea2196a04ed9594b298b37ac11b268",
-  OP_CRC_INTERMEDIATE: "01ece86b3ecda3cb34d684a00406d9222667cd656740f0f02754300979bdd095",
-}
-
-
-@dataclass(frozen=True, slots=True)
-class RamBlob:
-  address: int
-  data: bytes
-
-  def validate(self, target: TargetManifest = TARGET) -> None:
-    if (
-      type(self.address) is not int
-      or type(self.data) is not bytes
-      or self.address != target.sram_buffer
-      or len(self.data) != target.sector_length
-    ):
-      raise TransportError(
-        "RAM blob must be one exact sector at the reviewed SRAM buffer"
-      )
-
-
 @dataclass(frozen=True, slots=True)
 class EcuIdentity:
   part_number: bytes
@@ -284,104 +260,6 @@ class EcuTransport:
     option = routine_magic + struct.pack("!II", TARGET.ram_address, TARGET.envelope_length)
     uds.routine_control(bindings.routine_start, 0x10F0, option)
 
-  def run_staged_payload(
-    self,
-    image: Any,
-    *,
-    ram_blob: RamBlob,
-    operation: int,
-    new_uds: bool,
-  ) -> StreamResult:
-    bindings, _panda, uds = self._require_open()
-    try:
-      TARGET.validate()
-    except ValueError as exc:
-      raise TransportError(f"target manifest is invalid: {exc}") from exc
-    if type(ram_blob) is not RamBlob:
-      raise TransportError("staged RAM blob has the wrong concrete type")
-    ram_blob.validate(TARGET)
-    if type(operation) is not int or operation not in (
-      OP_CRC_PROBE, OP_RAM_ECHO, OP_RESTORE_SECTOR, OP_CRC_INTERMEDIATE,
-      OP_WRITE_TARGET_CANDIDATE, OP_WRITE_CRC_CANDIDATE,
-    ):
-      raise TransportError("unsupported staged operation")
-    specialized_operations = (
-      OP_RESTORE_SECTOR, OP_WRITE_TARGET_CANDIDATE, OP_WRITE_CRC_CANDIDATE,
-    )
-    if operation in specialized_operations and type(image) is not SpecializedPayloadImage:
-      raise TransportError("unsupported staged operation")
-    expected_name = {
-      OP_CRC_PROBE: "crc_probe",
-      OP_RAM_ECHO: "ram_echo",
-      OP_RESTORE_SECTOR: "restore_sector",
-      OP_CRC_INTERMEDIATE: "crc_intermediate",
-      OP_WRITE_TARGET_CANDIDATE: "write_target_candidate",
-      OP_WRITE_CRC_CANDIDATE: "write_crc_candidate",
-    }[operation]
-    try:
-      name = image.name
-      envelope = image.envelope
-      expected_sha256 = image.sha256
-    except AttributeError as exc:
-      raise TransportError("staged payload image is malformed") from exc
-    if name != expected_name:
-      raise TransportError("staged payload does not match the requested operation")
-    if type(envelope) is not bytes or len(envelope) != TARGET.envelope_length:
-      raise TransportError("payload envelope must be exactly 4096 bytes")
-    if type(expected_sha256) is not str:
-      raise TransportError("payload SHA-256 pin is malformed")
-    actual_digest = hashlib.sha256(envelope).hexdigest()
-    if actual_digest != expected_sha256:
-      raise TransportError(
-        f"payload SHA-256 mismatch: expected {expected_sha256}, got {actual_digest}"
-      )
-    if operation in specialized_operations:
-      if type(image) is not SpecializedPayloadImage:
-        raise TransportError("destructive staged operation requires an exact specialized payload image")
-      try:
-        image.validate()
-      except PayloadError as exc:
-        raise TransportError(f"destructive payload specialization is invalid: {exc}") from exc
-      if image.backup_sha256 != hashlib.sha256(ram_blob.data).hexdigest():
-        raise TransportError("staged sector does not match the specialized intent")
-    elif expected_sha256 != STAGED_ENVELOPE_SHA256[operation]:
-      raise TransportError("staged payload does not match its exact envelope pin")
-    if type(new_uds) is not bool or new_uds is not TARGET.new_uds:
-      raise TransportError("staged payload UDS variant does not match the target")
-    self._prevalidate_download(ram_blob.address, ram_blob.data)
-    self._prevalidate_download(TARGET.ram_address, envelope)
-
-    trigger_boundary = False
-    try:
-      self.enter_programming_and_unlock(new_uds=new_uds)
-      uds.write_data_by_identifier(0x203, b"\x01\x00\x00\x00\x00")
-      uds.write_data_by_identifier(0x201, bytes(16))
-      uds.write_data_by_identifier(0x202, bytes(16))
-      self._download_memory(uds, ram_blob.address, ram_blob.data)
-      self._download_memory(uds, TARGET.ram_address, envelope)
-      self._authenticate_envelope(uds, new_uds=new_uds)
-      trigger_boundary = True
-      self.trigger(
-        operation=operation, new_uds=new_uds,
-        sector_base=image.sector_base if operation in specialized_operations else None,
-      )
-      return self.collect_stream(operation=operation)
-    except Exception as exc:
-      if operation in specialized_operations and trigger_boundary:
-        raise PostTriggerTransportError(exc) from exc
-      self._best_effort_staged_cleanup(bindings, uds)
-      raise
-
-  def _best_effort_staged_cleanup(self, bindings: Any, uds: Any) -> None:
-    try:
-      self._switch_session(uds, bindings.session_default, 0.5)
-    except Exception:
-      pass
-    try:
-      self.reconnect_reset()
-    except Exception:
-      pass
-
   def trigger(
     self, *, operation: int, new_uds: bool, sector_base: int | None = None,
   ) -> None:
@@ -440,11 +318,30 @@ class EcuTransport:
     raise TransportError(f"timed out waiting for payload stream after {timeout:.1f}s")
 
   def run_payload(self, image: Any, *, operation: int, new_uds: bool) -> StreamResult:
-    self.prepare_and_upload(
-      bytes(image.envelope), expected_sha256=str(image.sha256), new_uds=new_uds,
+    destructive = operation in (
+      OP_RESTORE_SECTOR, OP_WRITE_TARGET_CANDIDATE, OP_WRITE_CRC_CANDIDATE,
     )
-    self.trigger(operation=operation, new_uds=new_uds)
-    return self.collect_stream(operation=operation)
+    sector_base = None
+    if destructive:
+      if type(image) is not SpecializedPayloadImage:
+        raise TransportError("destructive operation requires an exact specialized payload")
+      try:
+        image.validate()
+      except PayloadError as exc:
+        raise TransportError(f"destructive payload specialization is invalid: {exc}") from exc
+      sector_base = image.sector_base
+    triggered = False
+    try:
+      self.prepare_and_upload(
+        bytes(image.envelope), expected_sha256=str(image.sha256), new_uds=new_uds,
+      )
+      triggered = True
+      self.trigger(operation=operation, new_uds=new_uds, sector_base=sector_base)
+      return self.collect_stream(operation=operation)
+    except Exception as exc:
+      if destructive and triggered:
+        raise PostTriggerTransportError(exc) from exc
+      raise
 
   def reconnect_reset(self) -> None:
     _bindings, panda, _uds = self._require_open()

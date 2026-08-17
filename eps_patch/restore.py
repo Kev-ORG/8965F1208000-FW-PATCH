@@ -30,7 +30,7 @@ from .power import PowerCycleCheckpoint, request_power_cycle
 from .protocol import (
   OP_LIVE_READ, OP_RAM_ECHO, OP_RESTORE_SECTOR, RegionResult, StreamResult,
 )
-from .transport import BootloaderIdentity, EcuIdentity, RamBlob
+from .transport import BootloaderIdentity, EcuIdentity
 
 
 RAM_ECHO_ENVELOPE_SHA256 = (
@@ -458,9 +458,8 @@ def _run_restore_locked(
       with transport_factory() as transport:
         echo_identity = transport.read_bootloader_identity()
         _require_boot_identity(echo_identity, trusted.identity)
-        echo_result = transport.run_staged_payload(
+        echo_result = transport.run_payload(
           ram_echo,
-          ram_blob=RamBlob(target.sram_buffer, backup.data),
           operation=OP_RAM_ECHO,
           new_uds=new_uds,
         )
@@ -557,9 +556,8 @@ def _run_restore_locked(
         },
       )
       armed = True
-      restore_result = transport.run_staged_payload(
+      restore_result = transport.run_payload(
         image,
-        ram_blob=RamBlob(target.sram_buffer, backup.data),
         operation=OP_RESTORE_SECTOR,
         new_uds=new_uds,
       )
