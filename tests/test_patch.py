@@ -445,6 +445,258 @@ def test_patch_failure_persists_restore_plan(
   assert state["restore_order"] == restore_order
 
 
+def _crc_indeterminate_case(tmp_path):
+  result, state_path, _events, _confirmations = _run_patch(
+    tmp_path, failure_stage="crc-armed",
+  )
+  assert result is None
+  layout = ArtifactLayout(tmp_path / "artifacts")
+  target_source = layout.target_backup.read_bytes()
+  crc_source = layout.crc_backup.read_bytes()
+  target_candidate = bytearray(target_source)
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target_candidate = bytes(target_candidate)
+  crc_candidate = bytearray(crc_source)
+  crc_candidate[
+    TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4
+  ] = NEW_ADJUSTMENT
+  crc_candidate = bytes(crc_candidate)
+  target = replace(
+    TARGET,
+    original_sha256=hashlib.sha256(target_source).hexdigest(),
+    patched_sha256=hashlib.sha256(target_candidate).hexdigest(),
+  )
+  identity = EcuIdentity(
+    part_number=target.part_number,
+    application_software_id=target.application_software_id,
+    boot_software_id=target.boot_software_id,
+    panda_serial="test-panda",
+  )
+  return (
+    layout, state_path, target, identity, target_source, crc_source,
+    target_candidate, crc_candidate,
+  )
+
+
+def _invoke_patch_resume(
+  *, layout, target, transport, events, confirmations, powers,
+):
+  from eps_patch.patch import run_patch
+
+  return run_patch(
+    layout=layout,
+    payloads=_payloads(),
+    templates=_templates(),
+    preflight=lambda: events.append(("resume", "preflight")),
+    transport_factory=lambda: transport,
+    confirmation=lambda prompt: confirmations.append(prompt) or prompt,
+    power_cycle_checkpoint=lambda prompt: powers.append(prompt),
+    target=target,
+    new_uds=False,
+  )
+
+
+def test_patch_reconciles_crc_source_read_only_before_one_manual_retry(tmp_path):
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, crc_candidate,
+  ) = _crc_indeterminate_case(tmp_path)
+  events = []
+  confirmations = []
+  powers = []
+  live_transport = FakeTransport(
+    "reconcile", events, identity,
+    _live_read_result(target_candidate, crc_source), boot=True,
+  )
+
+  assert _invoke_patch_resume(
+    layout=layout, target=target, transport=live_transport, events=events,
+    confirmations=confirmations, powers=powers,
+  ) == state_path
+
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert state["result"] == "CRC_PRECHECKED"
+  assert state["restore_order"] == ["target"]
+  assert state["power_cycle"] == {
+    "completed_state": "CRC_PRECHECKED",
+    "next_state": "CRC_ARMED",
+  }
+  assert [event for event in events if len(event) > 2 and event[1] == "payload"] == [
+    ("reconcile", "payload", OP_LIVE_READ),
+  ]
+  assert confirmations == []
+
+  events.clear()
+  writer_transport = FakeTransport(
+    "retry-writer", events, identity,
+    _writer_result(OP_WRITE_CRC_CANDIDATE, target.crc_sector_base, crc_candidate),
+    boot=True,
+  )
+  assert _invoke_patch_resume(
+    layout=layout, target=target, transport=writer_transport, events=events,
+    confirmations=confirmations, powers=powers,
+  ) == state_path
+  assert [event for event in events if len(event) > 2 and event[1] == "payload"] == [
+    ("retry-writer", "payload", OP_WRITE_CRC_CANDIDATE),
+  ]
+  assert len(confirmations) == 1
+  assert confirmations[0].startswith("WRITE-CRC 8965B4512000 0xf8000 ")
+
+
+def test_patch_reconciles_complete_crc_candidate_without_rewriting(tmp_path):
+  (
+    layout, state_path, target, identity, _target_source, _crc_source,
+    target_candidate, crc_candidate,
+  ) = _crc_indeterminate_case(tmp_path)
+  events = []
+  confirmations = []
+  powers = []
+
+  assert _invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=FakeTransport(
+      "reconcile", events, identity,
+      _live_read_result(target_candidate, crc_candidate), boot=True,
+    ),
+    events=events,
+    confirmations=confirmations,
+    powers=powers,
+  ) == state_path
+
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert state["result"] == "CRC_COMMITTED"
+  assert state["restore_order"] == ["crc", "target"]
+  assert state["power_cycle"] == {
+    "completed_state": "CRC_COMMITTED",
+    "next_state": "VERIFY_PENDING",
+  }
+  assert [event for event in events if len(event) > 2 and event[1] == "payload"] == [
+    ("reconcile", "payload", OP_LIVE_READ),
+  ]
+  assert confirmations == []
+
+  events.clear()
+  final = _crc_result(
+    OP_VERIFY_CRC,
+    target_candidate,
+    crc_candidate,
+    _observation(
+      old_adjustment=NEW_ADJUSTMENT,
+      target_candidate=target_candidate,
+      crc_candidate=crc_candidate,
+      final=True,
+    ),
+  )
+  report_path = _invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=FakeTransport("verify", events, identity, final),
+    events=events,
+    confirmations=confirmations,
+    powers=powers,
+  )
+  assert report_path.name == "patch-report.json"
+  assert [event for event in events if len(event) > 2 and event[1] == "payload"] == [
+    ("verify", "payload", OP_VERIFY_CRC),
+  ]
+  assert confirmations == []
+
+
+@pytest.mark.parametrize("failure", ("partial", "identity", "transport"))
+def test_failed_crc_reconciliation_never_mutates_the_incident(
+  tmp_path, failure,
+):
+  from eps_patch.patch import PatchError
+
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, _crc_candidate,
+  ) = _crc_indeterminate_case(tmp_path)
+  original_state = state_path.read_bytes()
+  events = []
+  if failure == "partial":
+    partial = bytearray(crc_source)
+    partial[0x1234] ^= 1
+    result = _live_read_result(target_candidate, bytes(partial))
+    current_identity = identity
+    transport_failure = None
+  elif failure == "identity":
+    result = _live_read_result(target_candidate, crc_source)
+    current_identity = replace(identity, panda_serial="wrong-panda")
+    transport_failure = None
+  else:
+    result = _live_read_result(target_candidate, crc_source)
+    current_identity = identity
+    transport_failure = TimeoutError("live-read response lost")
+  transport = FakeTransport(
+    "reconcile", events, current_identity, result,
+    failure=transport_failure, boot=True,
+  )
+
+  with pytest.raises(PatchError):
+    _invoke_patch_resume(
+      layout=layout, target=target, transport=transport, events=events,
+      confirmations=[], powers=[],
+    )
+
+  assert state_path.read_bytes() == original_state
+  assert ("reconcile", "open") in events
+  if failure != "identity":
+    assert ("reconcile", "payload", OP_LIVE_READ) in events
+
+
+def test_second_indeterminate_crc_writer_blocks_every_future_hardware_call(tmp_path):
+  from eps_patch.patch import PatchError
+
+  (
+    layout, state_path, target, identity, _target_source, crc_source,
+    target_candidate, _crc_candidate,
+  ) = _crc_indeterminate_case(tmp_path)
+  events = []
+  _invoke_patch_resume(
+    layout=layout,
+    target=target,
+    transport=FakeTransport(
+      "reconcile", events, identity,
+      _live_read_result(target_candidate, crc_source), boot=True,
+    ),
+    events=events,
+    confirmations=[],
+    powers=[],
+  )
+  _invoke_error_events = []
+  with pytest.raises(PatchError, match="CRC_INDETERMINATE"):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=FakeTransport(
+        "retry-writer", _invoke_error_events, identity, None,
+        failure=TimeoutError("second response lost"), boot=True,
+      ),
+      events=_invoke_error_events,
+      confirmations=[],
+      powers=[],
+    )
+  state = json.loads(state_path.read_text(encoding="utf-8"))
+  assert sum(
+    transition["result"] == "CRC_INDETERMINATE"
+    for transition in state["transitions"]
+  ) == 2
+
+  blocked_events = []
+  with pytest.raises(PatchError, match="unresolved patch incident"):
+    _invoke_patch_resume(
+      layout=layout,
+      target=target,
+      transport=lambda: blocked_events.append("transport"),
+      events=blocked_events,
+      confirmations=blocked_events,
+      powers=blocked_events,
+    )
+  assert blocked_events == []
+
+
 def test_patch_rejects_unresolved_incident_before_preflight_or_transport(tmp_path):
   """A new patch must not obscure an incident whose restore scope is persisted."""
   from eps_patch.patch import PatchError, run_patch

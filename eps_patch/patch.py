@@ -247,6 +247,60 @@ def _run_patch_locked(
       transitions=state["transitions"],
     )
     entry = PatchState(state["result"])
+
+  if entry is PatchState.CRC_INDETERMINATE:
+    try:
+      preflight()
+      with transport_factory() as transport:
+        boot_identity = transport.read_bootloader_identity()
+        _require_boot_identity(boot_identity, trusted.identity)
+        live = transport.run_payload(
+          patch_payloads["live_read"],
+          operation=OP_LIVE_READ,
+          new_uds=new_uds,
+        )
+      classification = _validate_crc_reconciliation(live, candidate, target)
+    except PatchError:
+      raise
+    except Exception as exc:
+      raise PatchError(
+        f"CRC reconciliation failed before any writer was armed: {exc}"
+      ) from exc
+    if classification == "source":
+      reconciled_state = PatchState.CRC_PRECHECKED
+      restore_order = ("target",)
+      checkpoint = PowerCycleCheckpoint(
+        PatchState.CRC_PRECHECKED.value,
+        PatchState.CRC_ARMED.value,
+      )
+    else:
+      reconciled_state = PatchState.CRC_COMMITTED
+      restore_order = ("crc", "target")
+      checkpoint = PowerCycleCheckpoint(
+        PatchState.CRC_COMMITTED.value,
+        PatchState.VERIFY_PENDING.value,
+      )
+    live_target, live_crc = _regions(live, target, "CRC reconciliation")
+    path = recorder.record(
+      reconciled_state,
+      restore_order=restore_order,
+      evidence={
+        "identity": _boot_identity_record(boot_identity),
+        "reconciled_from": PatchState.CRC_INDETERMINATE.value,
+        "reconciled_sequence": state["sequence"],
+        "classification": classification,
+        "target_readback_sha256": sha256_bytes(live_target),
+        "crc_readback_sha256": sha256_bytes(live_crc),
+        "payload": _payload_record(patch_payloads["live_read"]),
+      },
+      power_cycle=checkpoint,
+    )
+    request_power_cycle(
+      checkpoint.completed_state,
+      checkpoint.next_state,
+      power_cycle_checkpoint,
+    )
+    return path
   phase = PatchState.STARTED if entry is None else entry
 
   target_candidate_crc = binascii.crc32(candidate.target_final)
@@ -771,7 +825,17 @@ def _select_patch_resume(
       state, _raw = _load_patch_state(directory / "state.json", directory.name)
     except RestoreError as exc:
       raise PatchError("cannot validate persisted patch attempt state") from exc
-    if state["schema"] != 2 or state["power_cycle"] is None:
+    planned_resume = state["schema"] == 2 and state["power_cycle"] is not None
+    indeterminate_resume = (
+      state["schema"] == 2
+      and state["result"] == PatchState.CRC_INDETERMINATE.value
+      and state["power_cycle"] is None
+      and sum(
+        transition["result"] == PatchState.CRC_INDETERMINATE.value
+        for transition in state["transitions"]
+      ) == 1
+    )
+    if not planned_resume and not indeterminate_resume:
       continue
     incident = incident_by_timestamp.get(directory.name)
     if incident is not None:
