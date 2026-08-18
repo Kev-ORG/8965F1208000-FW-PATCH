@@ -4,9 +4,9 @@
 #include <stdint.h>
 #include "protocol.h"
 
-#define TARGET_BASE 0x00060000u
+#define TARGET_BASE 0x00088000u
 #define TARGET_LENGTH 0x00008000u
-#define PATCH_ADDRESS 0x000664E6u
+#define PATCH_ADDRESS 0x0008E6C7u
 #define CRC_SECTOR_BASE 0x000F8000u
 #define CRC_ADJUST 0x000FFDECu
 #define SRAM_BUFFER ((volatile uint8_t *)0xFEBF2000u)

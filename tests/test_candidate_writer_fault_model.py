@@ -13,7 +13,7 @@ def test_candidate_writer_image_contains_only_local_candidate_authorization():
 def test_candidate_writer_locks_the_corrected_crc_adjustment_word():
   from eps_patch.candidate_writer import CANDIDATE_ADJUSTMENT
 
-  assert CANDIDATE_ADJUSTMENT == bytes.fromhex("cc474f41")
+  assert CANDIDATE_ADJUSTMENT == bytes.fromhex("f20fc941")
 
 
 @pytest.mark.parametrize("operation", (13, 14))
@@ -23,8 +23,8 @@ def test_every_writer_fault_boundary_is_one_shot_and_never_passes(operation):
     run_candidate_writer_fault_model,
   )
 
-  expected_base = 0x60000 if operation == 13 else 0xF8000
-  other_base = 0xF8000 if operation == 13 else 0x60000
+  expected_base = 0x88000 if operation == 13 else 0xF8000
+  other_base = 0xF8000 if operation == 13 else 0x88000
   boundaries = all_candidate_writer_fault_boundaries()
   assert "program:0" in boundaries and "program:127" in boundaries
   assert {

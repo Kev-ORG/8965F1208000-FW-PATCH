@@ -75,8 +75,8 @@ def test_live_read_build_and_zero_did_envelope_are_exactly_pinned():
   manifest = json.loads((BUILD / "manifest.json").read_text(encoding="utf-8"))
   binary = (BUILD / "live_read.bin").read_bytes()
   expected_binary = {
-    "size": 1280,
-    "sha256": "3543bbe2ea4077f9cbeb9db31b0bce98636be09ed9017e826bd408eb5058d9ea",
+    "size": 1286,
+    "sha256": "8adccbc840f292db8b3294d2c9e8118680d60b774e50e2a95da00f4bd57ca179",
   }
   assert BUILD_READY_PAYLOADS == ()
   assert BUILT_PAYLOADS["live_read"] == expected_binary
@@ -91,7 +91,7 @@ def test_live_read_build_and_zero_did_envelope_are_exactly_pinned():
     binary, did_201=bytes(16), did_202=bytes(16), iv=bytes(16),
   )
   expected_envelope_sha256 = (
-    "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+    "4efdeeca07e98b3ae9f1df68b49521f9931b0938204d33ca543f6b78ccae4dd0"
   )
   assert hashlib.sha256(envelope).hexdigest() == expected_envelope_sha256
   assert LIVE_READ_ENVELOPE_SHA256 == expected_envelope_sha256
@@ -105,7 +105,7 @@ def test_probe_binary_contains_entrypoint_and_exact_original_context():
   require_cross_build()
   binary = (BUILD / "probe_pe_cycle.bin").read_bytes()
   assert binary[:4] != bytes(4)
-  assert bytes.fromhex("20 e6 31 00") in binary
+  assert bytes.fromhex("1d 30 e0 d1") in binary
 
 
 def test_retained_binary_loader_accepts_and_validates_entrypoint(tmp_path: Path):

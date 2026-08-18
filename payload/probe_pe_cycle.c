@@ -9,7 +9,7 @@
 #define FLWL_REG MMIO32(0xFFF8A430u)
 #define FLWE_REG MMIO32(0xFFF82410u)
 
-static const uint8_t original_instruction[4] = {0x20, 0xE6, 0x31, 0x00};
+static const uint8_t original_instruction[4] = {0x1D, 0x30, 0xE0, 0xD1};
 
 static int equal_bytes(const volatile uint8_t *left, const uint8_t *right, uint32_t length) {
   uint32_t index;
@@ -115,7 +115,7 @@ void exploit(void) {
   if (magic0 != MAGIC_WORD || magic1 != MAGIC_WORD) primary_code = 1u;
 
   if (primary_code == 0u && !equal_bytes(
-    (volatile uint8_t *)(PATCH_ADDRESS - 2u), original_instruction, 4u
+    (volatile uint8_t *)(PATCH_ADDRESS - 3u), original_instruction, 4u
   )) primary_code = 2u;
 
   capture_dcra(&values[PROTO_DCRA_ENTRY_CTL], &values[PROTO_DCRA_ENTRY_COUT]);

@@ -7,18 +7,18 @@ def test_target_manifest_locks_patch_to_one_known_byte():
   from eps_patch.manifest import TARGET
 
   assert TARGET.part_number == b"8965B4512000"
-  assert (TARGET.sector_base, TARGET.sector_length) == (0x60000, 0x8000)
-  assert TARGET.sector_end == 0x68000
-  assert TARGET.instruction_address == 0x664E4
-  assert TARGET.patch_address == 0x664E6
-  assert TARGET.patch_offset == 0x64E6
-  assert TARGET.instruction_offset == 0x64E4
-  assert TARGET.pure_code_file_offset(TARGET.patch_address) == 0x664E6
-  assert TARGET.wide_image_file_offset(TARGET.patch_address) == 0x6E4E6
-  assert TARGET.original_instruction == bytes.fromhex("20 e6 31 00")
-  assert TARGET.patched_instruction == bytes.fromhex("20 e6 10 00")
-  assert TARGET.original_sha256 == "f0e76a887c2b85609cee4cd44620db068d414edfb44bbafe551ec440b2a0e9d0"
-  assert TARGET.patched_sha256 == "c67d992a8413d020fb16464d58654ab3fbd84139809b6b544c6142d6dcfeeb7b"
+  assert (TARGET.sector_base, TARGET.sector_length) == (0x88000, 0x8000)
+  assert TARGET.sector_end == 0x90000
+  assert TARGET.instruction_address == 0x8E6C4
+  assert TARGET.patch_address == 0x8E6C7
+  assert TARGET.patch_offset == 0x66C7
+  assert TARGET.instruction_offset == 0x66C4
+  assert TARGET.pure_code_file_offset(TARGET.patch_address) == 0x8E6C7
+  assert TARGET.wide_image_file_offset(TARGET.patch_address) == 0x8E6C7 + 0x8000
+  assert TARGET.original_instruction == bytes.fromhex("1d 30 e0 d1")
+  assert TARGET.patched_instruction == bytes.fromhex("1d 30 e0 01")
+  assert TARGET.original_sha256 == "281a0ef918a1bd8e709bb579a7f19163d3e908eedb5bdf79ad7348c701177b01"
+  assert TARGET.patched_sha256 == "9cd2d94f618542ab24b7e60446230af8e677b84914fa53003b806a2b2e69021b"
 
 
 def test_target_manifest_locks_transport_and_boot_markers():
@@ -40,8 +40,8 @@ def test_crc_manifest_uses_physical_addresses_without_translation():
   assert (TARGET.crc_sector_base, TARGET.crc_sector_end) == (0xF8000, 0x100000)
   assert TARGET.crc_adjust_address == 0xFFDEC
   assert TARGET.crc_original_adjust_word == 0x0962887F
-  assert TARGET.crc_patched_prefix_sw == 0xBEB0B833
-  assert TARGET.crc_patched_adjust_word == 0x414F47CC
+  assert TARGET.crc_patched_prefix_sw == 0xBE36F00D
+  assert TARGET.crc_patched_adjust_word == 0x41C90FF2
   assert TARGET.crc_residue == 0xFFFFFFFF
   assert TARGET.crc_patched_prefix_sw ^ TARGET.crc_residue == TARGET.crc_patched_adjust_word
   assert TARGET.pure_code_file_offset(TARGET.crc_adjust_address) == 0xFFDEC

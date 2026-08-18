@@ -32,7 +32,7 @@ import test_evidence as evidence_fx
 OLD_ADJUSTMENT = TARGET.crc_original_adjust_word.to_bytes(4, "little")
 NEW_ADJUSTMENT = TARGET.crc_patched_adjust_word.to_bytes(4, "little")
 LIVE_READ_ENVELOPE_SHA256 = (
-  "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+  "4efdeeca07e98b3ae9f1df68b49521f9931b0938204d33ca543f6b78ccae4dd0"
 )
 LEGACY_UNKNOWN_FRAME_ERROR = (
   "PostTriggerTransportError: post-trigger destructive outcome is indeterminate: "
@@ -49,7 +49,7 @@ def _case(layout: ArtifactLayout):
   target_source[TARGET.instruction_offset:TARGET.instruction_offset + 4] = TARGET.original_instruction
   target_source = bytes(target_source)
   target_candidate = bytearray(target_source)
-  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[3]
   target_candidate = bytes(target_candidate)
   crc_source = bytearray((index * 29) & 0xFF for index in range(TARGET.sector_length))
   crc_source[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = OLD_ADJUSTMENT
@@ -177,18 +177,13 @@ class FakeTransport:
 
 
 def _payloads():
-  from eps_patch.patch import (
-    CRC_INTERMEDIATE_ENVELOPE_SHA256,
-    CRC_PROBE_ENVELOPE_SHA256,
-    CRC_VERIFY_ENVELOPE_SHA256,
-  )
   from eps_patch.payload import build_envelope, load_built_shellcode
 
   build = Path(__file__).resolve().parents[1] / "payload" / "build"
   digests = {
-    "crc_probe": CRC_PROBE_ENVELOPE_SHA256,
-    "crc_intermediate": CRC_INTERMEDIATE_ENVELOPE_SHA256,
-    "crc_verify": CRC_VERIFY_ENVELOPE_SHA256,
+    "crc_probe": "c52089e58fbeb0e6a4955fcac8ca27e9118b090b07a3551ce3a31d49e787aa21",
+    "crc_intermediate": "9df9a088e841fdfc7fe6fa37fc30e53d4835d3973d9d25bc32248fa7688e78c4",
+    "crc_verify": "baf340143bcb2f577c3a6c03e9ba56774ee04735c5beba754df81c5a4ecc3c47",
     "live_read": LIVE_READ_ENVELOPE_SHA256,
   }
   payloads = {}
@@ -430,7 +425,7 @@ def test_patch_preserves_two_sector_order_confirmations_and_reconnects(tmp_path)
     "verify", "verify",
   ]
   assert len(confirmations) == 2
-  assert confirmations[0].startswith("WRITE-TARGET 8965B4512000 0x60000 ")
+  assert confirmations[0].startswith("WRITE-TARGET 8965B4512000 0x88000 ")
   assert confirmations[1].startswith("WRITE-CRC 8965B4512000 0xf8000 ")
   assert all("->" in prompt for prompt in confirmations)
 
@@ -467,7 +462,7 @@ def _crc_indeterminate_case(tmp_path):
   target_source = layout.target_backup.read_bytes()
   crc_source = layout.crc_backup.read_bytes()
   target_candidate = bytearray(target_source)
-  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[3]
   target_candidate = bytes(target_candidate)
   crc_candidate = bytearray(crc_source)
   crc_candidate[
@@ -507,7 +502,7 @@ def _legacy_crc_trigger_case(tmp_path):
   target_source = layout.target_backup.read_bytes()
   crc_source = layout.crc_backup.read_bytes()
   target_candidate = bytearray(target_source)
-  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[3]
   target_candidate = bytes(target_candidate)
   crc_candidate = bytearray(crc_source)
   crc_candidate[
@@ -649,7 +644,7 @@ def _mutate_legacy_state(state, mutation):
   elif mutation == "arm-operation":
     transitions[9]["evidence"]["operation"] = OP_WRITE_TARGET_CANDIDATE
   elif mutation == "arm-base":
-    transitions[9]["evidence"]["sector_base"] = "0x60000"
+    transitions[9]["evidence"]["sector_base"] = "0x88000"
   elif mutation == "arm-source":
     transitions[9]["evidence"]["source_sha256"] = probed["crc_candidate_sha256"]
   elif mutation == "arm-candidate":
@@ -1395,7 +1390,7 @@ def test_patch_rejects_unresolved_incident_before_preflight_or_transport(tmp_pat
   layout = ArtifactLayout(tmp_path / "artifacts")
   target_source = layout.target_backup.read_bytes()
   target_candidate = bytearray(target_source)
-  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[3]
   target = replace(
     TARGET,
     original_sha256=hashlib.sha256(target_source).hexdigest(),
@@ -1438,7 +1433,7 @@ def test_patch_allows_a_new_attempt_after_the_incident_restore_passes(tmp_path, 
   layout = ArtifactLayout(tmp_path / "artifacts")
   target_source = layout.target_backup.read_bytes()
   target_candidate = bytearray(target_source)
-  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[3]
   target = replace(
     TARGET,
     original_sha256=hashlib.sha256(target_source).hexdigest(),

@@ -251,7 +251,7 @@ def _download_records(uds):
   current = None
 @pytest.mark.parametrize(
   "operation,base",
-  ((OP_WRITE_TARGET_CANDIDATE, 0xF8000), (OP_WRITE_CRC_CANDIDATE, 0x60000)),
+  ((OP_WRITE_TARGET_CANDIDATE, 0xF8000), (OP_WRITE_CRC_CANDIDATE, 0x88000)),
 )
 def test_candidate_writer_trigger_rejects_cross_direction_base(operation, base):
   from eps_patch.transport import EcuTransport, TransportError
@@ -264,7 +264,7 @@ def test_candidate_writer_trigger_rejects_cross_direction_base(operation, base):
 @pytest.mark.parametrize(
   ("operation", "actual_base"),
   (
-    (OP_WRITE_TARGET_CANDIDATE, 0x60000),
+    (OP_WRITE_TARGET_CANDIDATE, 0x88000),
     (OP_WRITE_CRC_CANDIDATE, 0xF8000),
   ),
 )
@@ -283,7 +283,7 @@ def test_candidate_writer_validates_actual_sector_then_uses_fixed_trigger_route(
   )
 
 
-@pytest.mark.parametrize("actual_base", (0x60000, 0xF8000))
+@pytest.mark.parametrize("actual_base", (0x88000, 0xF8000))
 def test_restore_validates_actual_sector_then_uses_fixed_trigger_route(actual_base):
   from eps_patch.transport import EcuTransport
 
@@ -305,7 +305,7 @@ def test_actual_sector_differences_cannot_change_fixed_trigger_bytes():
     transport.trigger(
       operation=OP_WRITE_TARGET_CANDIDATE,
       new_uds=False,
-      sector_base=0x60000,
+      sector_base=0x88000,
     )
     transport.trigger(
       operation=OP_WRITE_CRC_CANDIDATE,
@@ -315,7 +315,7 @@ def test_actual_sector_differences_cannot_change_fixed_trigger_bytes():
     transport.trigger(
       operation=OP_RESTORE_SECTOR,
       new_uds=False,
-      sector_base=0x60000,
+      sector_base=0x88000,
     )
     transport.trigger(
       operation=OP_RESTORE_SECTOR,

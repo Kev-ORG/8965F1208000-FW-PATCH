@@ -7,7 +7,7 @@
 
 #define CRC_RANGE_START 0x00018000u
 #define CRC_RANGE_END   0x000FFDF0u
-#define CRC_PATCH_VALUE 0x10u
+#define CRC_PATCH_VALUE 0x01u
 
 #if !defined(PATCH_CRC_PAYLOAD)
 static uint32_t crc_adjustment(uint32_t prefix_crc) {
@@ -65,7 +65,7 @@ static uint32_t dcra_full_raw(
   for (address = CRC_RANGE_START; address < CRC_RANGE_END; address += 4u) {
     uint32_t word = MMIO32(address);
     if (hypothetical != 0u && address == (PATCH_ADDRESS & ~3u)) {
-      word = (word & 0xFF00FFFFu) | (CRC_PATCH_VALUE << 16);
+      word = (word & 0x00FFFFFFu) | (CRC_PATCH_VALUE << 24);
     }
     if (hypothetical != 0u && address == CRC_ADJUST) word = new_adjust;
     DCRA_IN = word;

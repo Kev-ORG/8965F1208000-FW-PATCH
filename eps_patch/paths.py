@@ -30,7 +30,7 @@ class ArtifactLayout:
 
   @property
   def target_backup(self) -> Path:
-    return self.probe_directory / "original-sector-0x60000.bin"
+    return self.probe_directory / "original-sector-0x88000.bin"
 
   @property
   def crc_backup(self) -> Path:

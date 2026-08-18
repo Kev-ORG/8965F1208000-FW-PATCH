@@ -17,8 +17,8 @@ void exploit(void) {
 
   __asm__ volatile ("di");
   runtime_begin(&guard);
-  if (MMIO32(PATCH_ADDRESS - 2u) != PATCHED_INSTRUCTION_WORD) {
-    halt_crc_error(PROTO_OP_VERIFY_CRC, 1u, MMIO32(PATCH_ADDRESS - 2u), &guard);
+  if (MMIO32(PATCH_ADDRESS - 3u) != PATCHED_INSTRUCTION_WORD) {
+    halt_crc_error(PROTO_OP_VERIFY_CRC, 1u, MMIO32(PATCH_ADDRESS - 3u), &guard);
   }
 
   capture_dcra(&entry_ctl, &entry_cout);

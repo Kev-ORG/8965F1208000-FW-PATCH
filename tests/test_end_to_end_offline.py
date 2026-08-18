@@ -164,7 +164,7 @@ class OfflineBench:
     self.source_target = source_target
     self.source_crc = source_crc
     target_candidate = bytearray(source_target)
-    target_candidate[target.patch_offset] = target.patched_instruction[2]
+    target_candidate[target.patch_offset] = target.patched_instruction[3]
     self.target_candidate = bytes(target_candidate)
     crc_candidate = bytearray(source_crc)
     crc_candidate[target.crc_adjust_offset:target.crc_adjust_offset + 4] = (
@@ -190,7 +190,7 @@ class OfflineBench:
     magic_offset = TARGET.magic_addresses[1] - TARGET.crc_sector_base
     source_crc[magic_offset:magic_offset + 4] = TARGET.magic_word.to_bytes(4, "little")
     target_candidate = bytearray(source_target)
-    target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+    target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[3]
     target = replace(
       TARGET,
       original_sha256=hashlib.sha256(source_target).hexdigest(),
@@ -490,7 +490,7 @@ def test_probe_patch_restore_lifecycle_without_external_paths(tmp_path):
   incident = bench.create_crc_indeterminate_fixture(layout)
   restore_report = bench.run_restore(layout=layout)
   assert json.loads(restore_report.read_text(encoding="utf-8"))["result"] == "PASS"
-  assert incident.restore_writes == [0xF8000, 0x60000]
+  assert incident.restore_writes == [0xF8000, 0x88000]
 
 
 def test_supplied_legacy_crc_incident_uses_one_corrected_route_writer(tmp_path):
@@ -634,22 +634,22 @@ def test_restore_routes_crc_before_target_after_fresh_live_reads(tmp_path):
   report = json.loads(report_path.read_text(encoding="utf-8"))
   state = json.loads((report_path.parent / "state.json").read_text(encoding="utf-8"))
   assert report["result"] == "PASS"
-  assert state["completed_sector_bases"] == ["0xf8000", "0x60000"]
+  assert state["completed_sector_bases"] == ["0xf8000", "0x88000"]
   assert [record.operation for record in records] == [
     OP_LIVE_READ, OP_RESTORE_SECTOR, OP_LIVE_READ, OP_RESTORE_SECTOR,
   ]
   writer_records = [
     record for record in records if record.operation == OP_RESTORE_SECTOR
   ]
-  assert [record.actual_base for record in writer_records] == [0xF8000, 0x60000]
-  assert [record.returned_base for record in writer_records] == [0xF8000, 0x60000]
+  assert [record.actual_base for record in writer_records] == [0xF8000, 0x88000]
+  assert [record.returned_base for record in writer_records] == [0xF8000, 0x88000]
   assert [record.trigger_frame for record in writer_records] == [
     bytes.fromhex("31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"),
     bytes.fromhex("31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"),
   ]
   assert len(confirmations) == 2
   assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")
-  assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x60000 ")
+  assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x88000 ")
   armed = [
     transition["evidence"]["confirmation"]
     for transition in state["transitions"]

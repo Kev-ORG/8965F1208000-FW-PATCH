@@ -6,8 +6,8 @@
 #define DCRA_CTL MMIO32(0xFFD51020u)
 #define CRC_RANGE_START 0x00018000u
 #define CRC_RANGE_END 0x000FFDF0u
-#define CRC_PATCH_VALUE 0x10u
-#define CRC_PATCHED_ADJUST_WORD 0x414F47CCu
+#define CRC_PATCH_VALUE 0x01u
+#define CRC_PATCHED_ADJUST_WORD 0x41C90FF2u
 
 static uint32_t dcra_full_raw(
   uint8_t hypothetical,
@@ -20,7 +20,7 @@ static uint32_t dcra_full_raw(
   for (address = CRC_RANGE_START; address < CRC_RANGE_END; address += 4u) {
     uint32_t word = MMIO32(address);
     if (hypothetical != 0u && address == (PATCH_ADDRESS & ~3u)) {
-      word = (word & 0xFF00FFFFu) | (CRC_PATCH_VALUE << 16);
+      word = (word & 0x00FFFFFFu) | (CRC_PATCH_VALUE << 24);
     }
     if (hypothetical != 0u && address == CRC_ADJUST) {
       word = CRC_PATCHED_ADJUST_WORD;

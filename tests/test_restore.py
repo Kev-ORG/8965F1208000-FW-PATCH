@@ -238,7 +238,7 @@ def test_restore_selects_crc_before_target_for_exact_third_indeterminate(tmp_pat
   assert plan.incident_state_path == state_path
   assert plan.incident_result == "CRC_INDETERMINATE"
   assert plan.restore_order == ("crc", "target")
-  assert plan.sector_bases == (0xF8000, 0x60000)
+  assert plan.sector_bases == (0xF8000, 0x88000)
 
 
 @pytest.mark.parametrize("successor", ("CRC_PRECHECKED", "CRC_COMMITTED"))
@@ -401,10 +401,10 @@ def test_patch_state_audit_retains_generic_second_indeterminate_retry_rejection(
 @pytest.mark.parametrize(
   ("state", "expected"),
   [
-    ({"result": "TARGET_INDETERMINATE", "restore_order": ["target"]}, (0x60000,)),
+    ({"result": "TARGET_INDETERMINATE", "restore_order": ["target"]}, (0x88000,)),
     (
       {"result": "RECOVERY_REQUIRED", "restore_order": ["crc", "target"]},
-      (0xF8000, 0x60000),
+      (0xF8000, 0x88000),
     ),
   ],
 )
@@ -1086,7 +1086,7 @@ def test_restore_crc_first_then_target_with_fresh_identity_and_exact_confirmatio
   assert report == state_path.parent / "restore-report.json"
   state = json.loads(state_path.read_text(encoding="utf-8"))
   assert state["result"] == "PASS"
-  assert state["completed_sector_bases"] == ["0xf8000", "0x60000"]
+  assert state["completed_sector_bases"] == ["0xf8000", "0x88000"]
   assert state["incident_state_sha256"] == sha256_bytes(incident_path.read_bytes())
   payloads = [event for event in events if len(event) > 2 and event[1] == "payload"]
   assert [event[2] for event in payloads] == [
@@ -1097,12 +1097,12 @@ def test_restore_crc_first_then_target_with_fresh_identity_and_exact_confirmatio
   ]
   assert len(confirmations) == 2
   assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")
-  assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x60000 ")
+  assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x88000 ")
   incident_digest = sha256_bytes(incident_path.read_bytes())
   assert all(incident_digest in prompt for prompt in confirmations)
   assert any("CRC_COMMITTED -> TARGET_LIVE_PRECHECKED" in prompt for prompt in power_prompts)
   assert (state_path.parent / "returned-sector-0xf8000.bin").exists()
-  assert (state_path.parent / "returned-sector-0x60000.bin").exists()
+  assert (state_path.parent / "returned-sector-0x88000.bin").exists()
 
 
 @pytest.mark.parametrize(

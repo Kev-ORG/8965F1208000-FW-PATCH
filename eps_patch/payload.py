@@ -25,40 +25,40 @@ AUTHENTICATOR_OFFSET = 0xFF0
 SHELLCODE_LIMIT = JUMP_ADDRESS_OFFSET
 PLAINTEXT_BODY_LENGTH = AUTHENTICATOR_OFFSET
 PROBE_PE_CYCLE_ENVELOPE_SHA256 = (
-  "73e31e97921d4ca1c65c79fb09650744eb81b3a9e6db8493e02efb7629f62a52"
+  "ea95db5e7a8c623220f5a164d74aab83dc1c8ba51d83681c7966a51da7aed705"
 )
 BUILT_PAYLOADS = {
   "probe_pe_cycle": {
-    "size": 2936,
-    "sha256": "7f4c8cc9f4612d53925c4d239fea1dc4b1987676a83f22222b5e45642559f132",
+    "size": 2940,
+    "sha256": "d869833ab09a3d48a23aff22f7ce1746ab43b2909d6331e4bd3344fb483430ff",
   },
   "crc_probe": {
     "size": 2228,
-    "sha256": "2586922b12c8253fe8cbfb7860aa91201682783c6c0f61cd9ccea1aea8197eb0",
+    "sha256": "8976ad8024bffa0e8b007a61727ec325319ec4dd1016905dc318133e1edda628",
   },
   "crc_verify": {
-    "size": 1890,
-    "sha256": "4662f7160592d26e2fac16415cfd90224c1b7c64741254638ce27cbacb979cc0",
+    "size": 1894,
+    "sha256": "5594a6d505b37824d1bed056efdd74cc0542b67851e4fbc9755284350938f34a",
   },
   "crc_intermediate": {
-    "size": 2354,
-    "sha256": "03dee5c0435f02bf7bb97681c4392defa61ca6d81db46ad7ae820521bef89281",
+    "size": 2356,
+    "sha256": "502ceb25f563f1e187bf4d328587a360360d610fb3a428f7037ba056bd589f30",
   },
   "write_target_candidate": {
-    "size": 4024,
-    "sha256": "b3101d8a2fcb1c262c7d006fde8c156a3a28f7fd6062b8452655c2a0d1b07507",
+    "size": 4040,
+    "sha256": "2d6210013a172f85e7a30cd34b4177f21cdb147d4552122576e4506dae89cbcd",
   },
   "write_crc_candidate": {
-    "size": 4028,
-    "sha256": "17ba9ca3f1b2adaf25b91b1499437045d3402ac7408b5fbe0a45d8cd16639c40",
+    "size": 4032,
+    "sha256": "677e77f9ea9a3719253b427995360310ec18759cb5daa7ec71db361d1fb9c217",
   },
   "restore_sector": {
-    "size": 3952,
-    "sha256": "7b79cf5c13ea58e0fd1bd2766592218c42eb214ea3809b7f604c45cfe4673de0",
+    "size": 3956,
+    "sha256": "69f13fe2d8b7be3714ab57c2bcb7288c120f70e7d20341392de4615a82526cd1",
   },
   "live_read": {
-    "size": 1280,
-    "sha256": "3543bbe2ea4077f9cbeb9db31b0bce98636be09ed9017e826bd408eb5058d9ea",
+    "size": 1286,
+    "sha256": "8adccbc840f292db8b3294d2c9e8118680d60b774e50e2a95da00f4bd57ca179",
   },
 }
 BUILD_READY_PAYLOADS: tuple[str, ...] = ()
@@ -139,24 +139,24 @@ REVIEWED_TEMPLATE_MANIFESTS = MappingProxyType({
   ),
   "restore_sector": PayloadTemplateManifest(
     name="restore_sector",
-    size=3952,
-    sha256="7b79cf5c13ea58e0fd1bd2766592218c42eb214ea3809b7f604c45cfe4673de0",
+    size=3956,
+    sha256="69f13fe2d8b7be3714ab57c2bcb7288c120f70e7d20341392de4615a82526cd1",
     intent=IntentLayout(offset=0x600, size=0x80),
-    review_sha256="7b79cf5c13ea58e0fd1bd2766592218c42eb214ea3809b7f604c45cfe4673de0",
+    review_sha256="69f13fe2d8b7be3714ab57c2bcb7288c120f70e7d20341392de4615a82526cd1",
   ),
   "write_target_candidate": PayloadTemplateManifest(
     name="write_target_candidate",
-    size=4024,
-    sha256="b3101d8a2fcb1c262c7d006fde8c156a3a28f7fd6062b8452655c2a0d1b07507",
+    size=4040,
+    sha256="2d6210013a172f85e7a30cd34b4177f21cdb147d4552122576e4506dae89cbcd",
     intent=IntentLayout(offset=0x600, size=0x80),
-    review_sha256="b3101d8a2fcb1c262c7d006fde8c156a3a28f7fd6062b8452655c2a0d1b07507",
+    review_sha256="2d6210013a172f85e7a30cd34b4177f21cdb147d4552122576e4506dae89cbcd",
   ),
   "write_crc_candidate": PayloadTemplateManifest(
     name="write_crc_candidate",
-    size=4028,
-    sha256="17ba9ca3f1b2adaf25b91b1499437045d3402ac7408b5fbe0a45d8cd16639c40",
+    size=4032,
+    sha256="677e77f9ea9a3719253b427995360310ec18759cb5daa7ec71db361d1fb9c217",
     intent=IntentLayout(offset=0x600, size=0x80),
-    review_sha256="17ba9ca3f1b2adaf25b91b1499437045d3402ac7408b5fbe0a45d8cd16639c40",
+    review_sha256="677e77f9ea9a3719253b427995360310ec18759cb5daa7ec71db361d1fb9c217",
   ),
 })
 

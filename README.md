@@ -110,7 +110,7 @@ Probe does not erase or program Flash. It performs the comprehensive read-only e
 ```text
 /data/eps-patch/artifacts/probe/
 ├── faci-pe-cycle-report.json
-├── original-sector-0x60000.bin
+├── original-sector-0x88000.bin
 ├── original-sector-0xf8000.bin
 └── recovery-metadata.json
 ```
@@ -135,7 +135,7 @@ Start or resume patch with the same command every time:
 python3.12 eps_patch.py patch
 ```
 
-Patch automatically loads the fixed trusted probe directory. It accepts no report, backup, sector, incident, payload, or artifact path. The intended direction is fixed: target sector (`0x60000`) first, then the CRC sector (`0xf8000`).
+Patch automatically loads the fixed trusted probe directory. It accepts no report, backup, sector, incident, payload, or artifact path. The intended direction is fixed: target sector (`0x88000`) first, then the CRC sector (`0xf8000`).
 
 Each hardware-bearing invocation opens at most one Panda/UDS connection and executes at most one ECU payload. The initial attempt-binding invocation performs preflight but opens no transport. After a completed stage, the program atomically persists the exact next checkpoint, prints a prominent complete-power-cycle instruction, and exits normally. Because comma is powered by the vehicle, its SSH connection also disappears during the cycle. Do not wait in the dead terminal and do not try to continue that process.
 
@@ -235,7 +235,7 @@ Restore discovers a recoverable local incident and binds it to the fixed semanti
 
 Before every restore writer arm, a separate invocation runs the read-only `live_read` payload and reads both complete sectors again. The host checks the exact ECU identity, incident scope, original backups, known candidates, completed restore history, and current live classification.
 
-If both sectors may be affected, restore uses CRC sector (`0xf8000`) first, then the target sector (`0x60000`). This keeps the recovery direction fixed and matches the reviewed restore primitive. A typical two-sector restore advances across separate invocations:
+If both sectors may be affected, restore uses CRC sector (`0xf8000`) first, then the target sector (`0x88000`). This keeps the recovery direction fixed and matches the reviewed restore primitive. A typical two-sector restore advances across separate invocations:
 
 ```text
 STARTED
@@ -282,16 +282,20 @@ Every retained shellcode payload is wrapped in an encrypted 4 KiB (`0x1000`) env
 
 The trigger range is not a Flash destination. Specialized target and CRC payloads still read, erase, program, and return their fixed actual sectors:
 
-- target sector: `0x60000`, length `0x8000`;
+- target sector: `0x88000`, length `0x8000`;
 - CRC sector: `0xF8000`, length `0x8000`.
 
-The operator never selects `0xE0000`, `0x60000`, or `0xF8000`. These values are fixed and cross-checked by the host, source contracts, binary manifest, payload stream, and state evidence.
+The operator never selects `0xE0000`, `0x88000`, or `0xF8000`. These values are fixed and cross-checked by the host, source contracts, binary manifest, payload stream, and state evidence.
 
 ### 2.5 ECU-local 32 KiB read-modify-write
 
 RequestDownload is 4 KiB because it carries executable payload code, not a sector image. A 32 KiB sector is never uploaded from the host to SRAM. The fixed writer reads the live Flash sector into ECU SRAM, checks that it is the exact expected source, changes only the reviewed byte/CRC adjustment, calculates the candidate checks, and then performs the fixed-direction erase/program sequence.
 
-The target change is the reviewed control-flow byte at `0x664E6`, from `0x31` to `0x10`. Because boot integrity covers that change, the CRC-sector adjustment at `0xFFDEC` must also change. This is why a complete patch requires both `0x60000` and `0xF8000` rather than only the instruction byte.
+The reviewed target change is a single control-flow byte in the `0x88000` sector. The four-byte aligned instruction word at `0x8E6C4` is `0xD1E0301D` in the original firmware and `0x01E0301D` after the patch: only byte `0x8E6C7` changes, from `0xD1` to `0x01`. That byte is the low byte of the 16-bit instruction `cmp r0, r26`; changing it to `cmp r0, r0` forces the always-equal condition and permanently neutralizes the following conditional branch, which is the reviewed control-flow bypass.
+
+Because boot integrity covers that change, the CRC-sector adjustment word at `0xFFDEC` must also change. On the reviewed firmware the patched-prefix CRC is `0xBE36F00D` and the candidate adjustment word is `0x41C90FF2`, so the full Code Flash range CRC residue stays `0xFFFFFFFF`. This is why a complete patch requires both `0x88000` and `0xF8000` rather than only the instruction byte.
+
+The current `original_sha256` and `patched_sha256` values in `eps_patch/manifest.py` are the digests of the reviewed target sector before and after this single-byte change. This patch point, the adjustment word, and the sector digests were captured from the actual bench vehicle and validated end to end with a full `probe → patch → verify` run.
 
 ### 2.6 FACI, CRC, DCRA, cleanup, and readback
 
@@ -371,7 +375,7 @@ Before adapting a fork, independently establish:
 - SecurityAccess algorithm and secret, RequestDownload encoding, RAM allocation, authentication routine, and FF00 trigger behavior;
 - bootloader exploit entry, runtime stubs, calling convention, stack, watchdog, CAN transmit registers, SRAM buffers, and payload-size constraints;
 - Code Flash geometry, block/sector/page sizes, FACI register addresses and access widths, protection unlock, P/E entry and exit sequence, commands, error masks, polling, cleanup, and reset effects;
-- the real firmware control-flow decision found through disassembly and bench evidence, rather than copying `0x664E6` or the `0x31 -> 0x10` change;
+- the real firmware control-flow decision found through disassembly and bench evidence, rather than copying `0x8E6C7` or the `0xD1 -> 0x01` change;
 - every boot-integrity mechanism: CRC/DCRA descriptors, covered range, seed, polynomial, reflection, byte/word order, adjustment words, signatures, secure boot, and failure behavior;
 - read-only identity, complete original sector backups, and recovery metadata before any destructive experiment;
 - independently reviewed fixed-direction patch and restore primitives, with restore proven before patching;
@@ -450,9 +454,9 @@ It is outside the supported workflow. Treat the affected writer as indeterminate
 
 The host downloads a 4 KiB executable envelope, not a sector image. The payload reads and modifies the live 32 KiB sector inside the ECU, avoiding an out-of-range 32 KiB upload and binding the candidate to live Flash.
 
-### Q18. Why does the transaction show `0x60000` or `0xF8000` while FF00 uses `0xE0000`?
+### Q18. Why does the transaction show `0x88000` or `0xF8000` while FF00 uses `0xE0000`?
 
-`0x60000` and `0xF8000` are the actual fixed sectors read or written by specialized payloads. `0xE0000 / 0x8000` is the common validated UDS trigger range. It is not the writer destination.
+`0x88000` and `0xF8000` are the actual fixed sectors read or written by specialized payloads. `0xE0000 / 0x8000` is the common validated UDS trigger range. It is not the writer destination.
 
 ### Q19. Does Flash-level PASS prove RX SecOC is functionally bypassed on the bench?
 
@@ -574,7 +578,7 @@ Probe 绝不擦除或写入 Flash。它执行一次综合只读证据流程，�
 ```text
 /data/eps-patch/artifacts/probe/
 ├── faci-pe-cycle-report.json
-├── original-sector-0x60000.bin
+├── original-sector-0x88000.bin
 ├── original-sector-0xf8000.bin
 └── recovery-metadata.json
 ```
@@ -599,7 +603,7 @@ Probe 绝不擦除或写入 Flash。它执行一次综合只读证据流程，�
 python3.12 eps_patch.py patch
 ```
 
-Patch 自动加载固定的可信 probe 目录，不接受报告、备份、扇区、incident、payload 或产物路径。方向固定为先写 target 扇区（`0x60000`），再写 CRC 扇区（`0xf8000`）。
+Patch 自动加载固定的可信 probe 目录，不接受报告、备份、扇区、incident、payload 或产物路径。方向固定为先写 target 扇区（`0x88000`），再写 CRC 扇区（`0xf8000`）。
 
 每次包含硬件操作的运行最多只打开一个 Panda/UDS 连接，并最多执行一个 ECU payload。初次绑定 attempt 的运行只做 preflight，不打开 transport。阶段完成后，程序会原子保存准确的下一 checkpoint，显示醒目的完整断电提示，然后正常退出。由于 comma 由车辆供电，断电时 SSH 也必然断开。不要在已经断开的终端里等待，也不要试图继续旧进程。
 
@@ -699,7 +703,7 @@ Restore 自动发现本机可恢复 incident，并绑定固定语义 PASS probe 
 
 每次 restore writer arm 前，都会在单独一次运行中执行只读 `live_read`，重新读取两个完整扇区。主机会核对精确 ECU 身份、incident 范围、原始备份、已知 candidate、已完成 restore 历史和当前 live 分类。
 
-如果两个扇区都可能受到影响，restore 固定先恢复 CRC 扇区（`0xf8000`），再恢复 target 扇区（`0x60000`）。这个方向固定，并与已审查 restore primitive 一致。典型双扇区 restore 会跨多次运行推进：
+如果两个扇区都可能受到影响，restore 固定先恢复 CRC 扇区（`0xf8000`），再恢复 target 扇区（`0x88000`）。这个方向固定，并与已审查 restore primitive 一致。典型双扇区 restore 会跨多次运行推进：
 
 ```text
 STARTED
@@ -746,16 +750,20 @@ CLI 故意只公开 `probe`、`patch`、`restore` 和可选 Panda serial。操�
 
 trigger range 不是 Flash 目标。专用 target 与 CRC payload 始终读、擦、写并回传固定实际扇区：
 
-- target 扇区：`0x60000`，长度 `0x8000`；
+- target 扇区：`0x88000`，长度 `0x8000`；
 - CRC 扇区：`0xF8000`，长度 `0x8000`。
 
-操作员不选择 `0xE0000`、`0x60000` 或 `0xF8000`。这些值由主机、source contract、binary manifest、payload stream 和 state evidence 多重固定与交叉验证。
+操作员不选择 `0xE0000`、`0x88000` 或 `0xF8000`。这些值由主机、source contract、binary manifest、payload stream 和 state evidence 多重固定与交叉验证。
 
 ### 2.5 ECU 内部完成 32 KiB read-modify-write
 
 RequestDownload 是 4 KiB，因为主机下载的是可执行 payload，不是扇区镜像。32 KiB 扇区绝不会由主机上传到 SRAM。固定 writer 在 ECU 内读取 live Flash 扇区到 SRAM，确认它是精确预期 source，只改变已审查字节或 CRC 调整字，计算 candidate 检查，然后执行固定方向擦写。
 
-target 改动是 `0x664E6` 处已审查控制流字节从 `0x31` 改为 `0x10`。由于 boot integrity 覆盖该变化，`0xFFDEC` 处 CRC 扇区调整字也必须改变。因此完整 patch 同时需要 `0x60000` 与 `0xF8000`，而不是只改一个指令字节。
+已审查的 target 改动是 `0x88000` 扇区内的单个控制流字节。位于 `0x8E6C4` 的 4 字节对齐指令字，原厂固件是 `0xD1E0301D`，patch 后是 `0x01E0301D`：只有字节 `0x8E6C7` 从 `0xD1` 变成 `0x01`。该字节是 16 位指令 `cmp r0, r26` 的低字节；改成 `cmp r0, r0` 后恒为相等，永久中和了其后的条件分支，这就是已审查的控制流旁路。
+
+由于 boot integrity 覆盖该变化，`0xFFDEC` 处 CRC 扇区调整字也必须改变。已审查固件上 patch 后的 prefix CRC 为 `0xBE36F00D`，candidate 调整字为 `0x41C90FF2`，使完整 Code Flash 范围 CRC residue 保持 `0xFFFFFFFF`。因此完整 patch 同时需要 `0x88000` 与 `0xF8000`，而不是只改一个指令字节。
+
+`eps_patch/manifest.py` 中当前的 `original_sha256` 与 `patched_sha256` 就是已审查 target 扇区在这单个字节改动前后的摘要。该点位、调整字和扇区摘要都来自真实台架车辆，并通过完整的 `probe → patch → verify` 端到端验证。
 
 ### 2.6 FACI、CRC、DCRA、清理与回读
 
@@ -822,7 +830,7 @@ docker run --rm \
 9. FACI 访问宽度、顺序、有限轮询、清理与 fault model；
 10. 聚焦 payload/source-contract 测试与完整 Python 测试。
 
-如果 binary 或 envelope pin 缺失或过期，运行时必须继续 fail closed。不能只是为了让测试通过就更新 pin，必须先独立审查 artifact。
+如果 binary 或 envelope pin 缺失或过期，运行时必须继续 fail closed。不能只是为了通过测试就更新 pin，必须先独立审查 artifact。
 
 ### 3.4 为其他 RH850 台架目标创建 fork
 
@@ -835,7 +843,7 @@ docker run --rm \
 - SecurityAccess 算法与 secret、RequestDownload 编码、RAM allocation、authentication routine 和 FF00 trigger 行为；
 - bootloader exploit 入口、runtime stub、calling convention、stack、watchdog、CAN transmit register、SRAM buffer 与 payload 大小限制；
 - Code Flash geometry、block/sector/page 大小、FACI register 地址及访问宽度、protection unlock、P/E 进入退出顺序、command、error mask、polling、cleanup 与 reset 影响；
-- 通过 disassembly 与台架证据找到真实 firmware 控制流决策，不能复制 `0x664E6` 或 `0x31 -> 0x10`；
+- 通过 disassembly 与台架证据找到真实 firmware 控制流决策，不能复制 `0x8E6C7` 或 `0xD1 -> 0x01`；
 - 所有 boot-integrity 机制，包括 CRC/DCRA descriptor、覆盖范围、seed、polynomial、reflection、byte/word order、adjustment word、signature、secure boot 与失败行为；
 - 任何破坏性实验前的只读身份、完整原始扇区备份与 recovery metadata；
 - 独立审查的固定方向 patch 和 restore primitive，并且先证明 restore 再 patch；
@@ -914,9 +922,9 @@ docker run --rm \
 
 主机下载的是 4 KiB 可执行 envelope，不是扇区镜像。Payload 在 ECU 内读取并修改 live 32 KiB 扇区，避免超范围的 32 KiB 上传，并把 candidate 绑定到 live Flash。
 
-### 问18：为什么交易显示 `0x60000` 或 `0xF8000`，FF00 却使用 `0xE0000`？
+### 问18：为什么交易显示 `0x88000` 或 `0xF8000`，FF00 却使用 `0xE0000`？
 
-`0x60000` 和 `0xF8000` 是专用 payload 实际读写的固定扇区；`0xE0000 / 0x8000` 是公共、已验证的 UDS trigger range，不是 writer 目标地址。
+`0x88000` 和 `0xF8000` 是专用 payload 实际读写的固定扇区；`0xE0000 / 0x8000` 是公共、已验证的 UDS trigger range，不是 writer 目标地址。
 
 ### 问19：Flash 级 PASS 能证明台架 RX SecOC 已经功能性绕过吗？
 

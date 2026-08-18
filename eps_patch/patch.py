@@ -44,16 +44,16 @@ from .transport import BootloaderIdentity, EcuIdentity
 
 
 CRC_PROBE_ENVELOPE_SHA256 = (
-  "34ebb36ee81b714c3ef42f24e5f527654ab1939f0b39e208701cbed43dd6f840"
+  "c52089e58fbeb0e6a4955fcac8ca27e9118b090b07a3551ce3a31d49e787aa21"
 )
 CRC_INTERMEDIATE_ENVELOPE_SHA256 = (
-  "bf61cb3d4a6895857cedc9ca647407ce40b57a8dd206be835cbc8b8220feebec"
+  "9df9a088e841fdfc7fe6fa37fc30e53d4835d3973d9d25bc32248fa7688e78c4"
 )
 CRC_VERIFY_ENVELOPE_SHA256 = (
-  "99c69ca2bbec2eac594349cf375d4a917c61acff18a412cc72031871776cb27e"
+  "baf340143bcb2f577c3a6c03e9ba56774ee04735c5beba754df81c5a4ecc3c47"
 )
 LIVE_READ_ENVELOPE_SHA256 = (
-  "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+  "4efdeeca07e98b3ae9f1df68b49521f9931b0938204d33ca543f6b78ccae4dd0"
 )
 
 
@@ -748,8 +748,8 @@ def _candidate_from_probe(
   expected_diffs = (
     (
       target.patch_address,
-      target.original_instruction[2],
-      target.patched_instruction[2],
+      target.original_instruction[3],
+      target.patched_instruction[3],
     ),
     *tuple(
       (

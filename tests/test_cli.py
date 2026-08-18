@@ -155,7 +155,7 @@ def test_destructive_confirmation_is_visible_and_accepts_only_exact_yes(
   monkeypatch,
   capsys,
 ):
-  transaction = "WRITE-TARGET 8965B4512000 0x60000 hashes"
+  transaction = "WRITE-TARGET 8965B4512000 0x88000 hashes"
   monkeypatch.setattr("builtins.input", lambda: "YES")
 
   assert cli_module._confirm_destructive(transaction) == transaction

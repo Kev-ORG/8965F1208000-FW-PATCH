@@ -24,7 +24,7 @@ def _sectors():
 def test_two_sector_candidate_keeps_fixed_direction_and_exact_diff_set():
   target_source, crc_source = _sectors()
   target_candidate = bytearray(target_source)
-  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[2]
+  target_candidate[TARGET.patch_offset] = TARGET.patched_instruction[3]
   target = replace(
     TARGET,
     original_sha256=hashlib.sha256(target_source).hexdigest(),

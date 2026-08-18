@@ -30,7 +30,7 @@ def test_intermediate_computes_live_and_hypothetical_dcra_and_restores_entry_sta
   assert "SRAM_BUFFER" not in source
   assert "if ((entry_ctl & 3u) != 0u)" in source
   assert "if (restore_dcra(entry_ctl, entry_cout) != 0u)" in source
-  assert "CRC_CANDIDATE_ADJUST 0x414F47CCu" in source
+  assert "CRC_CANDIDATE_ADJUST 0x41C90FF2u" in source
 
 
 def test_intermediate_requires_current_software_hardware_agreement_and_nonpass_state():

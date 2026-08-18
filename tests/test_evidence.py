@@ -14,7 +14,7 @@ from eps_patch.paths import ArtifactLayout
 
 
 REVIEWED_PROBE_ENVELOPE_SHA256 = (
-  "73e31e97921d4ca1c65c79fb09650744eb81b3a9e6db8493e02efb7629f62a52"
+  "ea95db5e7a8c623220f5a164d74aab83dc1c8ba51d83681c7966a51da7aed705"
 )
 SNAPSHOTS = {
   "PRE": {
@@ -144,7 +144,7 @@ def test_installer_atomically_creates_complete_fixed_probe(valid_probe):
 
   assert result == layout.probe_report
   assert {path.name for path in layout.probe_directory.iterdir()} == {
-    "faci-pe-cycle-report.json", "original-sector-0x60000.bin",
+    "faci-pe-cycle-report.json", "original-sector-0x88000.bin",
     "original-sector-0xf8000.bin", "recovery-metadata.json",
   }
   assert load_probe_pass(layout, target).target_sector == target_sector

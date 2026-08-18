@@ -39,7 +39,7 @@ def test_comprehensive_probe_has_only_reviewed_faci_register_stores():
 
 def test_comprehensive_probe_checks_context_and_idle_before_any_faci_store():
   source = source_text()
-  assert "original_instruction[4] = {0x20, 0xE6, 0x31, 0x00}" in source
+  assert "original_instruction[4] = {0x1D, 0x30, 0xE0, 0xD1}" in source
   assert "if (primary_code == 0u && !equal_bytes(" in source
   assert "snapshot_is_idle(&snapshots[0])" in source
   first_store = source.index("FACI_FPCKAR = 0xAA01u")
@@ -51,7 +51,7 @@ def test_comprehensive_probe_keeps_magic_and_instruction_pre_gates_before_faci_a
   source = source_text()
   assert "magic0 != MAGIC_WORD || magic1 != MAGIC_WORD" in source
   instruction_gate = source.index("!equal_bytes(")
-  assert "(volatile uint8_t *)(PATCH_ADDRESS - 2u), original_instruction, 4u" in re.sub(
+  assert "(volatile uint8_t *)(PATCH_ADDRESS - 3u), original_instruction, 4u" in re.sub(
     r"\s+", " ", source,
   )
   first_store = source.index("FACI_FPCKAR = 0xAA01u")
@@ -85,7 +85,7 @@ def test_comprehensive_probe_streams_two_full_regions_crc_dcra_magic_and_40_diag
   assert "dcra_full_raw(0u, &guard)" in source
   assert "dcra_full_raw(1u, &guard)" in source
   dcra = DCRA_PATH.read_text(encoding="utf-8")
-  assert "CRC_PATCHED_ADJUST_WORD 0x414F47CCu" in dcra
+  assert "CRC_PATCHED_ADJUST_WORD 0x41C90FF2u" in dcra
   restore = dcra[dcra.index("static uint32_t restore_dcra"):]
   assert "(ctl & 3u) != 0u" in restore
   assert "DCRA_COUT = cout ^ 0xFFFFFFFFu" in restore

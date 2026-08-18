@@ -32,7 +32,7 @@ from .transport import BootloaderIdentity, EcuIdentity
 
 
 LIVE_READ_ENVELOPE_SHA256: str | None = (
-  "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+  "4efdeeca07e98b3ae9f1df68b49521f9931b0938204d33ca543f6b78ccae4dd0"
 )
 RESTORE_INTENT_MAGIC = 0x52535452
 RESTORE_INTENT_SCHEMA = 2
@@ -126,7 +126,7 @@ _LEGACY_NRC31_ERROR = (
   "RoutineControl negative response NRC 0x31; raw=037f313100000000"
 )
 _LEGACY_LIVE_READ_ENVELOPE_SHA256 = (
-  "4d102f0c91e7ef8807efcbe48b5bedf8a787e37ff6d3860792b82f35ed4fca2d"
+  "4efdeeca07e98b3ae9f1df68b49521f9931b0938204d33ca543f6b78ccae4dd0"
 )
 
 

@@ -47,7 +47,7 @@ def build_crc_candidate(
     raise ValueError("target sector instruction context does not match the exact original")
 
   target_final = bytearray(target_sector)
-  target_final[target.patch_offset] = target.patched_instruction[2]
+  target_final[target.patch_offset] = target.patched_instruction[3]
   crc_final = bytearray(crc_sector)
   adjustment_offset = target.crc_adjust_offset
   old_adjustment = bytes(crc_final[adjustment_offset:adjustment_offset + 4])

@@ -42,7 +42,7 @@ def restore_sector_frames(base: int, sector: bytes, status_codes=(0, 0, 0, 0, 0,
 def candidate_writer_frames(operation: int, sector: bytes, status_codes=(0, 0, 0, 0, 0, 0)):
   from eps_patch.protocol import FrameType, PROTOCOL_VERSION
 
-  base = {13: 0x60000, 14: 0xF8000}[operation]
+  base = {13: 0x88000, 14: 0xF8000}[operation]
   frames = [
     bytes([FrameType.BEGIN0, PROTOCOL_VERSION, operation, 0]) + struct.pack("<I", base),
     bytes([FrameType.BEGIN1, PROTOCOL_VERSION, operation, 1]) + struct.pack("<I", 0x8000),
@@ -66,7 +66,7 @@ def candidate_writer_frames(operation: int, sector: bytes, status_codes=(0, 0, 0
 
 @pytest.mark.parametrize(
   ("operation", "base"),
-  ((13, 0x60000), (14, 0xF8000)),
+  ((13, 0x88000), (14, 0xF8000)),
 )
 def test_candidate_writer_stream_is_fixed_base_complete_and_zero_status(operation, base):
   from eps_patch.protocol import RegionResult, decode_candidate_writer_statuses
@@ -92,7 +92,7 @@ def test_candidate_writer_stream_rejects_ambiguous_result(operation, mutation):
   if mutation == "truncate": del frames[5]
   elif mutation == "duplicate": frames.insert(5, frames[4])
   elif mutation == "reorder": frames[-3], frames[-4] = frames[-4], frames[-3]
-  elif mutation == "wrong-base": frames[0] = frames[0][:4] + struct.pack("<I", 0xF8000 if operation == 13 else 0x60000)
+  elif mutation == "wrong-base": frames[0] = frames[0][:4] + struct.pack("<I", 0xF8000 if operation == 13 else 0x88000)
   elif mutation == "wrong-magic":
     magic = next(i for i, frame in enumerate(frames) if frame[0] == FrameType.MAGIC)
     frames[magic] = frames[magic][:4] + struct.pack("<I", 0)
@@ -146,7 +146,7 @@ def test_candidate_writer_status_decoder_rejects_bool_and_float_coercion(statuse
     decode_candidate_writer_statuses(13, statuses)
 
 
-@pytest.mark.parametrize("base", (0x60000, 0xF8000))
+@pytest.mark.parametrize("base", (0x88000, 0xF8000))
 def test_restore_sector_stream_binds_one_allowlisted_region(base):
   from eps_patch.protocol import OP_RESTORE_SECTOR, RegionResult
 
@@ -162,7 +162,7 @@ def test_restore_sector_stream_rejects_unreviewed_base_and_false_success():
 
   with pytest.raises(ProtocolError, match="base"):
     collect(restore_sector_frames(0x70000, bytes(0x8000)), operation=OP_RESTORE_SECTOR)
-  frames = restore_sector_frames(0x60000, bytes(0x8000))
+  frames = restore_sector_frames(0x88000, bytes(0x8000))
   del frames[4]
   with pytest.raises(ProtocolError, match="DATA index"):
     collect(frames, operation=OP_RESTORE_SECTOR)
@@ -170,7 +170,7 @@ def test_restore_sector_stream_rejects_unreviewed_base_and_false_success():
 
 CRC_VALUES = (
   0, 0xFFFFFFFF, 0x18000, 0xFFDF0, 0xFFDEC,
-  0x0962887F, 0xBEB0B833, 0x414F47CC,
+  0x0962887F, 0xBE36F00D, 0x41C90FF2,
   0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
   0, 0xFFFFFFFF, 0x8000, 0x88341866,
 )
@@ -197,7 +197,7 @@ def crc_probe_frames(
     bytes([FrameType.BEGIN0, PROTOCOL_VERSION, operation, 0]) + struct.pack("<I", 0x18000),
     bytes([FrameType.BEGIN1, PROTOCOL_VERSION, operation, 1]) + struct.pack("<I", 2),
   ]
-  for slot, (base, region) in enumerate(((0x60000, target_sector), (0xF8000, crc_sector))):
+  for slot, (base, region) in enumerate(((0x88000, target_sector), (0xF8000, crc_sector))):
     frames.extend([
       bytes([FrameType.REGION_BEGIN, PROTOCOL_VERSION, operation, slot]) + struct.pack("<I", base),
       bytes([FrameType.REGION_LENGTH, PROTOCOL_VERSION, operation, slot]) + struct.pack("<I", len(region)),
@@ -232,12 +232,12 @@ def live_read_frames(target_sector: bytes, crc_sector: bytes):
 
   frames = [
     bytes([FrameType.BEGIN0, PROTOCOL_VERSION, OP_LIVE_READ, 0])
-    + struct.pack("<I", 0x60000),
+    + struct.pack("<I", 0x88000),
     bytes([FrameType.BEGIN1, PROTOCOL_VERSION, OP_LIVE_READ, 1])
     + struct.pack("<I", 2),
   ]
   for slot, (base, region) in enumerate(
-    ((0x60000, target_sector), (0xF8000, crc_sector)),
+    ((0x88000, target_sector), (0xF8000, crc_sector)),
   ):
     frames.extend([
       bytes([FrameType.REGION_BEGIN, PROTOCOL_VERSION, OP_LIVE_READ, slot])
@@ -275,7 +275,7 @@ def test_live_read_collects_only_two_complete_fixed_regions():
   assert result.operation == OP_LIVE_READ
   assert result.sector is None
   assert result.regions == (
-    RegionResult(0x60000, target),
+    RegionResult(0x88000, target),
     RegionResult(0xF8000, crc),
   )
   assert result.magic_words == (0x5AA5A55A, 0x5AA5A55A)
@@ -303,7 +303,7 @@ def test_live_read_rejects_ambiguous_or_non_read_only_result(mutation):
       index for index, frame in enumerate(frames)
       if frame[0] == FrameType.REGION_BEGIN and frame[3] == 1
     )
-    frames[second] = frames[second][:4] + struct.pack("<I", 0x60000)
+    frames[second] = frames[second][:4] + struct.pack("<I", 0x88000)
   elif mutation == "missing-region":
     second = next(
       index for index, frame in enumerate(frames)
@@ -324,7 +324,7 @@ def test_live_read_rejects_ambiguous_or_non_read_only_result(mutation):
     frames.insert(
       magic,
       bytes([FrameType.REGION_BEGIN, PROTOCOL_VERSION, OP_LIVE_READ, 2])
-      + struct.pack("<I", 0x60000),
+      + struct.pack("<I", 0x88000),
     )
   elif mutation == "nonzero-status":
     status = next(
@@ -349,7 +349,7 @@ def test_crc_probe_collects_two_exact_regions_and_crc_observations():
   )
 
   assert result.regions == (
-    RegionResult(0x60000, bytes([0x31]) * 0x8000),
+    RegionResult(0x88000, bytes([0x31]) * 0x8000),
     RegionResult(0xF8000, bytes([0xA5]) * 0x8000),
   )
   assert result.crc_values == CRC_VALUES
@@ -361,7 +361,7 @@ def test_crc_probe_collects_two_exact_regions_and_crc_observations():
   (
     lambda frames: frames[:0x2005] + frames[2:0x2005] + frames[0x2005:],
     lambda frames: [
-      frame[:4] + struct.pack("<I", 0x60000) if frame[0] == 0xB2 and frame[3] == 1 else frame
+      frame[:4] + struct.pack("<I", 0x88000) if frame[0] == 0xB2 and frame[3] == 1 else frame
       for frame in frames
     ],
     lambda frames: [
@@ -387,7 +387,7 @@ def test_verify_crc_uses_the_same_exact_two_region_grammar():
   result = collect_crc_probe_frames(bytes(0x8000), bytes([0xFF]) * 0x8000, operation=OP_VERIFY_CRC)
 
   assert result.operation == OP_VERIFY_CRC
-  assert tuple(region.base for region in result.regions) == (0x60000, 0xF8000)
+  assert tuple(region.base for region in result.regions) == (0x88000, 0xF8000)
 
 
 def test_crc_intermediate_uses_exact_two_region_sixteen_record_grammar():
@@ -403,7 +403,7 @@ def test_crc_intermediate_uses_exact_two_region_sixteen_record_grammar():
     operation=OP_CRC_INTERMEDIATE,
   )
   assert result.operation == OP_CRC_INTERMEDIATE
-  assert tuple(region.base for region in result.regions) == (0x60000, 0xF8000)
+  assert tuple(region.base for region in result.regions) == (0x88000, 0xF8000)
   assert result.crc.sram_echo_length == 0x8000
   assert result.crc.sram_echo_crc32 == 0x12345678
 
@@ -418,7 +418,7 @@ def _valid_intermediate_fixture():
   crc_source[0x7E00:0x7E04] = TARGET.magic_word.to_bytes(4, "little")
   values = (
     0x10203040, 0x50607080, TARGET.crc_range_start, TARGET.crc_range_end,
-    TARGET.crc_adjust_address, 0x0962887F, 0xBEB0B833, 0x414F47CC,
+    TARGET.crc_adjust_address, 0x0962887F, 0xBE36F00D, 0x41C90FF2,
     0x12345678, 0xFFFFFFFF, 0x12345678, 0xFFFFFFFF,
     0x10203040, 0x50607080, 0, 0,
   )

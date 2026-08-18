@@ -651,7 +651,7 @@ def validate_crc_intermediate(result: StreamResult) -> CrcObservation:
     or crc.range_end != TARGET.crc_range_end
     or crc.adjust_address != TARGET.crc_adjust_address
     or crc.old_adjust_word != 0x0962887F
-    or crc.new_adjust_word != 0x414F47CC
+    or crc.new_adjust_word != 0x41C90FF2
     or crc.patched_prefix_sw != (crc.new_adjust_word ^ 0xFFFFFFFF)
     or crc.original_sw_full != crc.original_dcra_raw
     or crc.original_sw_full == 0xFFFFFFFF

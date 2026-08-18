@@ -15,7 +15,7 @@ def _sources():
 
 def test_each_writer_binds_one_literal_base_and_operation_without_runtime_selector():
   sources = _sources()
-  assert "#define WRITER_SECTOR_BASE 0x00060000u" in sources["target"]
+  assert "#define WRITER_SECTOR_BASE 0x00088000u" in sources["target"]
   assert "#define WRITER_OPERATION PROTO_OP_WRITE_TARGET_CANDIDATE" in sources["target"]
   assert "#define WRITER_SECTOR_BASE 0x000F8000u" in sources["crc"]
   assert "#define WRITER_OPERATION PROTO_OP_WRITE_CRC_CANDIDATE" in sources["crc"]
@@ -72,7 +72,7 @@ def test_writer_has_one_erase_one_program_no_retry_no_feaddr_and_complete_readba
 
 def test_writer_sources_have_no_other_sector_or_steering_capability():
   for name, source in _sources().items():
-    other = "0x000F8000u" if name == "target" else "0x00060000u"
+    other = "0x000F8000u" if name == "target" else "0x00088000u"
     # Other-sector reads are centralized in the shared gate; the template TU
     # itself exposes only its compile-time write destination.
     assert other not in source

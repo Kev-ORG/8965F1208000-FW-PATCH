@@ -81,13 +81,13 @@ class TargetManifest:
       raise ValueError("target sector must be exactly 32 KiB")
     if not self.sector_base <= self.instruction_address < self.sector_end:
       raise ValueError("instruction lies outside target sector")
-    if self.patch_address != self.instruction_address + 2:
-      raise ValueError("patch byte is not the RX state immediate")
+    if self.patch_address != self.instruction_address + 3:
+      raise ValueError("patch byte is not the control-flow byte of the instruction")
     if len(self.original_instruction) != 4 or len(self.patched_instruction) != 4:
       raise ValueError("instruction contexts must be four bytes")
     diffs = [i for i, pair in enumerate(zip(self.original_instruction, self.patched_instruction)) if pair[0] != pair[1]]
-    if diffs != [2] or self.original_instruction[2] != 0x31 or self.patched_instruction[2] != 0x10:
-      raise ValueError("manifest must describe only 0x31 -> 0x10 at instruction byte 2")
+    if diffs != [3] or self.original_instruction[3] != 0xD1 or self.patched_instruction[3] != 0x01:
+      raise ValueError("manifest must describe only 0xD1 -> 0x01 at instruction byte 3")
     for digest in (self.original_sha256, self.patched_sha256):
       if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
         raise ValueError("sector digest must be lowercase SHA-256")
@@ -102,7 +102,7 @@ class TargetManifest:
       self.crc_patched_prefix_sw,
       self.crc_patched_adjust_word,
       self.crc_residue,
-    ) != (0x0962887F, 0xBEB0B833, 0x414F47CC, 0xFFFFFFFF):
+    ) != (0x0962887F, 0xBE36F00D, 0x41C90FF2, 0xFFFFFFFF):
       raise ValueError("CRC constants do not match the reviewed original and patched states")
     if self.crc_patched_prefix_sw ^ self.crc_residue != self.crc_patched_adjust_word:
       raise ValueError("CRC patched adjustment does not match the reviewed residue formula")
@@ -143,14 +143,14 @@ TARGET = TargetManifest(
   application_software_id=b"\x018965B4512000\x00\x00\x00\x00",
   boot_software_id=b"\x02" + (b"!" * 32),
   new_uds=False,
-  sector_base=0x60000,
+  sector_base=0x88000,
   sector_length=0x8000,
-  instruction_address=0x664E4,
-  patch_address=0x664E6,
-  original_instruction=bytes.fromhex("20 e6 31 00"),
-  patched_instruction=bytes.fromhex("20 e6 10 00"),
-  original_sha256="f0e76a887c2b85609cee4cd44620db068d414edfb44bbafe551ec440b2a0e9d0",
-  patched_sha256="c67d992a8413d020fb16464d58654ab3fbd84139809b6b544c6142d6dcfeeb7b",
+  instruction_address=0x8E6C4,
+  patch_address=0x8E6C7,
+  original_instruction=bytes.fromhex("1d 30 e0 d1"),
+  patched_instruction=bytes.fromhex("1d 30 e0 01"),
+  original_sha256="281a0ef918a1bd8e709bb579a7f19163d3e908eedb5bdf79ad7348c701177b01",
+  patched_sha256="9cd2d94f618542ab24b7e60446230af8e677b84914fa53003b806a2b2e69021b",
   magic_addresses=(0x17E00, 0xFFE00),
   magic_word=0x5AA5A55A,
   uds_request_id=0x7A1,
@@ -172,8 +172,8 @@ TARGET = TargetManifest(
   crc_sector_end=0x100000,
   crc_adjust_address=0xFFDEC,
   crc_original_adjust_word=0x0962887F,
-  crc_patched_prefix_sw=0xBEB0B833,
-  crc_patched_adjust_word=0x414F47CC,
+  crc_patched_prefix_sw=0xBE36F00D,
+  crc_patched_adjust_word=0x41C90FF2,
   crc_residue=0xFFFFFFFF,
 )
 TARGET.validate()
