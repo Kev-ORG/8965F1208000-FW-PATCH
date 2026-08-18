@@ -4,6 +4,8 @@
 
 This repository provides a deliberately narrow, comma-local workflow for the reviewed `8965B4512000` EPS on a stationary private bench. Its public commands are only `probe`, `patch`, and `restore`.
 
+Verified working on a **2024 Toyota RAV4 Prime** and a **2026 Toyota Sienna (PRC made)**.
+
 # English
 
 ## 0. Risk Warning
@@ -475,6 +477,8 @@ No. The overall method may be similar, but all identities, addresses, UDS behavi
 Keep the entire artifact tree, terminal transcript, exact Git commit, retained manifest/binaries, probe backups, every patch/restore attempt and state, returned sectors, Panda serial, power-cycle sequence, DTCs, and stationary bench observations. Never preserve only the final report.
 
 # 中文
+
+已在 **2024 款丰田 RAV4 Prime** 和 **2026 款丰田 Sienna(中国制造)** 上验证可用。
 
 ## 0. 风险警告
 
