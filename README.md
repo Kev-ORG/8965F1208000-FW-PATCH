@@ -61,7 +61,7 @@ rsync -av \
   ./ comma@<comma-ip>:/data/eps-patch/app/
 ```
 
-Important:
+Notes:
 
 - Do not use `--delete` against `/data/eps-patch/`. A broad delete can remove the sibling `/data/eps-patch/artifacts/` recovery evidence.
 - Never synchronize a laptop artifact directory over `/data/eps-patch/artifacts/`.
@@ -268,7 +268,7 @@ The CLI intentionally exposes only `probe`, `patch`, and `restore`, plus optiona
 
 ### 2.2 Semantic evidence instead of a JSON-file lock
 
-The workflow automatically reads `/data/eps-patch/artifacts/probe/faci-pe-cycle-report.json`. It does not require moving that file to a laptop and back. Trust is based on its parsed semantic PASS fields and its binding to the original sector bytes, recovery metadata, exact ECU/application/boot identity, Panda, payload manifest, and reviewed envelope—not on a fixed digest of the JSON serialization.
+The workflow automatically reads `/data/eps-patch/artifacts/probe/faci-pe-cycle-report.json`. It does not require moving that file to a laptop and back. Trust is based on its parsed semantic PASS fields and its binding to the original sector bytes, recovery metadata, exact ECU/application/boot identity, Panda, payload manifest, and reviewed envelope, not on a fixed digest of the JSON serialization.
 
 Both persisted backups must have exact expected length, address, SHA-256 relationship, instruction context, and CRC meaning. Patch and restore reconstruct and validate these relationships before transport.
 
@@ -276,7 +276,7 @@ Both persisted backups must have exact expected length, address, SHA-256 relatio
 
 Every hardware invocation constructs one reviewed encrypted payload envelope, opens one Panda/UDS connection, executes at most one payload, validates its stream, persists the result, and closes. It does not execute a second payload through a new UDS session while the previous RAM runtime may still influence the ECU.
 
-Read-only prechecks and destructive writers therefore live in different invocations and are separated by a complete power cycle. This is why the operator reruns the same command several times.
+Read-only prechecks and destructive writers live in different invocations, separated by a complete power cycle. You rerun the same command until the stage completes.
 
 ### 2.4 Download envelope, trigger range, and actual sectors
 
@@ -307,13 +307,30 @@ Software CRC and DCRA observations serve different roles. The host verifies full
 
 Writer payloads are never automatically retried. After the trigger boundary, any incomplete or malformed outcome is persisted as indeterminate so a read-only or external recovery decision can be made without guessing.
 
-### 2.7 Atomic artifacts and immutable history
+### 2.7 Flash programming matches the manufacturer's Calibration Update Wizard
+
+The writer's FACI flash-programming sequence is byte-identical to the flash shellcode in Toyota's Calibration Update Wizard (CUW) update packages. I extracted and disassembled the CUW erase/program payload (`*_erase.pt.bin` from the `8965F3...` update packages) in Ghidra and compared it register-by-register against `faci_dual.h`. Every register write, command byte, poll bit, and error mask matches:
+
+- P/E entry: `FENTRYR` (`0xFFA10084`) `0xAA01`; `FHVE15`/`FHVE3` (`0xFFF8A430`/`0xFFF82410`) to `1`; `FAREASELC` (`0xFFA10020`) `0x3B00`; `FPROTR` (`0xFFA10088`) `0x5501`.
+- Block Erase: `FSADDR` = address, then command-area writes `0x20` then `0xD0`.
+- Program: `FSADDR` = address, command-area writes `0xE8`, `0x80`, then 16-bit data words paced on `FSTATR` bit 11 (SUSRDY), then `0xD0`.
+- Ready/error polling: `FSTATR` bit 15 (FRDY), error mask `0x7040`, `FASTAT` bit 4 (CMDLK); Forced Stop `0xB3` on error.
+- Runtime stubs at `0xFEBF1188` (watchdog), `0xFEBF11AC` (critical enter), `0xFEBF11D2` (critical exit).
+
+Two differences are deliberate and stricter:
+
+- FW-PATCH's `exit_pe` also writes `FENTRYR` `0xAA00` to leave P/E mode; the CUW shellcode's exit clears only `FHVE15`/`FHVE3` and `FPROTR` and relies on a reset.
+- FW-PATCH's `failure_cleanup` issues Status Clear `0x50` in addition to Forced Stop `0xB3`.
+
+"Byte-identical" covers the FACI sequence: the register writes and command bytes. The payload binaries are this repository's own shellcode, compiled from `payload/*.c`; they reproduce the manufacturer's programming behavior, not its machine code.
+
+### 2.8 Atomic artifacts and immutable history
 
 Reports, state transitions, intents, returned sectors, and recovery plans are written atomically and fsynced. Each transition binds the relevant prior state, exact identity, probe evidence, source/candidate digests, payload/envelope identity, transaction intent, and returned observations.
 
 An unresolved historical incident blocks new patching even if a newer attempt exists. A restore closes an incident only with a PASS state bound to that exact incident history. Manual state edits, copied directories, or mismatched backups fail closed before transport.
 
-### 2.8 What PASS does and does not mean
+### 2.9 What PASS does and does not mean
 
 Probe PASS means the read-only evidence contract passed. Patch PASS means the final complete target and CRC sectors equal the reviewed candidates and the required CRC/DCRA checks passed. Restore PASS means the affected sectors were restored and validated against the bound originals.
 
@@ -430,7 +447,7 @@ Do not assume whether CRC changed. Complete the requested power cycle. The ordin
 
 ### Q11. Why are the ordinary reconciliation and one historical exception not general retries?
 
-The ordinary path is limited to the first indeterminate outcome and one read-only classification. The legacy path additionally requires an exact reviewed history, identity, four source/candidate digests, both complete live-read records, and reconstructed writer evidence. In both paths, live Flash—not the NRC—decides whether to skip a writer, allow a newly human-authorized writer, or stop; every semantic near miss fails closed.
+The ordinary path is limited to the first indeterminate outcome and one read-only classification. The legacy path additionally requires an exact reviewed history, identity, four source/candidate digests, both complete live-read records, and reconstructed writer evidence. In both paths, live Flash, not the NRC, decides whether to skip a writer, allow a newly human-authorized writer, or stop; every semantic near miss fails closed.
 
 ### Q12. Can I edit or replace `state.json` to continue?
 
@@ -475,6 +492,10 @@ No. The overall method may be similar, but all identities, addresses, UDS behavi
 ### Q22. What evidence should be preserved after success or failure?
 
 Keep the entire artifact tree, terminal transcript, exact Git commit, retained manifest/binaries, probe backups, every patch/restore attempt and state, returned sectors, Panda serial, power-cycle sequence, DTCs, and stationary bench observations. Never preserve only the final report.
+
+### Q23. Does this repository's flash programming match the manufacturer's?
+
+Yes. The FACI sequence is byte-identical to the flash shellcode in Toyota's Calibration Update Wizard packages, cross-verified in Ghidra against the `8965F3...` CUW erase/program payload. Two differences are stricter cleanup, not functional changes: `exit_pe` also writes `FENTRYR` `0xAA00`, and `failure_cleanup` issues Status Clear `0x50` in addition to Forced Stop `0xB3`. See Section 2.7.
 
 # 中文
 
@@ -746,7 +767,7 @@ CLI 故意只公开 `probe`、`patch`、`restore` 和可选 Panda serial。操�
 
 每次硬件运行只构造一个已审查加密 payload envelope，打开一个 Panda/UDS 连接，最多执行一个 payload，验证 stream，持久化结果并关闭。它不会在上一个 RAM runtime 可能仍影响 ECU 时，立即再开第二个 UDS 会话执行另一个 payload。
 
-因此只读预检与破坏性 writer 分属不同运行，并由完整断电隔开。这就是同一命令需要重复运行多次的原因。
+只读预检与破坏性 writer 分属不同运行，由完整断电隔开。你反复运行同一条命令，直到阶段完成。
 
 ### 2.4 下载 envelope、trigger range 与实际扇区
 
@@ -777,13 +798,30 @@ writer primitive 保留迁移前已经台架验证的 `patch_v2` 与 `restore_v1
 
 writer payload 绝不自动重试。越过 trigger 边界后，只要 outcome 不完整或格式错误，就持久化为不确定状态，让只读判定或外部恢复在不猜测的前提下进行。
 
-### 2.7 原子 artifacts 与不可变历史
+### 2.7 刷写逻辑与原厂 Calibration Update Wizard 字节级一致
+
+writer 的 FACI 刷写序列与原厂丰田 Calibration Update Wizard（CUW）更新包里的刷写 shellcode 字节级相同。我把 `8965F3...` 更新包的擦写 payload（`*_erase.pt.bin`）提取出来，在 Ghidra 里反汇编，并与 `faci_dual.h` 逐寄存器对照。每个寄存器写、命令字节、轮询位和错误掩码都一致：
+
+- P/E 进入：`FENTRYR`（`0xFFA10084`）写 `0xAA01`；`FHVE15`/`FHVE3`（`0xFFF8A430`/`0xFFF82410`）写 `1`；`FAREASELC`（`0xFFA10020`）写 `0x3B00`；`FPROTR`（`0xFFA10088`）写 `0x5501`。
+- Block Erase：`FSADDR` 写地址，然后命令区写 `0x20`、`0xD0`。
+- Program：`FSADDR` 写地址，命令区写 `0xE8`、`0x80`，随后按 `FSTATR` bit 11（SUSRDY）节奏写 16 位数据字，最后写 `0xD0`。
+- 就绪/错误轮询：`FSTATR` bit 15（FRDY）、错误掩码 `0x7040`、`FASTAT` bit 4（CMDLK）；出错时 Forced Stop `0xB3`。
+- runtime stub 位于 `0xFEBF1188`（watchdog）、`0xFEBF11AC`（critical enter）、`0xFEBF11D2`（critical exit）。
+
+两处差异都是刻意收紧，不是功能变化：
+
+- FW-PATCH 的 `exit_pe` 额外写 `FENTRYR` `0xAA00` 退出 P/E 模式；CUW shellcode 的退出只清 `FHVE15`/`FHVE3` 和 `FPROTR`，依赖 reset 复位。
+- FW-PATCH 的 `failure_cleanup` 在 Forced Stop `0xB3` 之外还执行 Status Clear `0x50`。
+
+"字节级一致" 指的是 FACI 序列：寄存器写和命令字节。payload 二进制是本仓库自己的 shellcode，由 `payload/*.c` 编译而来；它们复现原厂的刷写行为，不是复刻原厂的机器码。
+
+### 2.8 原子 artifacts 与不可变历史
 
 报告、state transition、intent、回传扇区和 recovery plan 都采用原子写入与 fsync。每个 transition 会绑定相关前一状态、精确身份、probe 证据、source/candidate 摘要、payload/envelope 身份、交易 intent 与回传观察。
 
 只要任何历史 incident 没有被绑定的 PASS restore 关闭，就会阻止新的 patch，即使存在更新 attempt。Restore 只有生成绑定到该精确 incident 历史的 PASS 才能关闭它。手工修改 state、复制目录或替换备份都会在传输前 fail closed。
 
-### 2.8 PASS 的含义与边界
+### 2.9 PASS 的含义与边界
 
 Probe PASS 表示只读证据合同通过；patch PASS 表示最终完整 target 与 CRC 扇区等于已审查 candidate，并通过所需 CRC/DCRA；restore PASS 表示受影响扇区恢复为绑定 original 且通过验证。
 
@@ -945,3 +983,7 @@ docker run --rm \
 ### 问22：成功或失败后应该保留哪些证据？
 
 保留完整 artifact 树、终端记录、精确 Git commit、保留的 manifest/binary、probe backup、每次 patch/restore attempt 与 state、回传扇区、Panda serial、断电顺序、DTC 和静止台架观察。绝不能只保存最终报告。
+
+### 问23：本仓库的刷写逻辑与原厂一致吗？
+
+一致。FACI 序列与原厂丰田 Calibration Update Wizard 包里的刷写 shellcode 字节级相同，并针对 `8965F3...` CUW 擦写 payload 在 Ghidra 中交叉验证。两处差异都是更严格的清理，不是功能差异：`exit_pe` 额外写 `FENTRYR` `0xAA00`，`failure_cleanup` 在 Forced Stop `0xB3` 之外还执行 Status Clear `0x50`。参见第 2.7 节。

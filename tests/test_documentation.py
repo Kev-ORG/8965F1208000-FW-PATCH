@@ -138,8 +138,8 @@ def test_readme_has_matched_recovery_faq_coverage():
   """Catch omission of a recovery decision from either language guide."""
   english, chinese = _readme_halves()
 
-  assert english.count("\n### Q") == 22
-  assert chinese.count("\n### 问") == 22
+  assert english.count("\n### Q") == 23
+  assert chinese.count("\n### 问") == 23
   for required in (
     "SSH",
     "TARGET_INDETERMINATE",
