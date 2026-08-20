@@ -341,14 +341,14 @@ def _validate_diagnostics(values: object) -> dict[str, dict[str, int]]:
           f"probe {checkpoint} {name} exceeds its declared diagnostic width"
         )
     if checkpoint == "CONFIGURED":
-      # FREQR is write-triggered but reads back as zero on the reviewed EPS.
+      # FAREASELC is write-triggered but reads back as zero on the reviewed EPS.
       required_indices = (0, 1, 2, 3, 6, 7)
       if any(raw[index] != expected[index] for index in required_indices):
         raise ProbeError(
           "probe CONFIGURED FACI diagnostic does not match the reviewed state"
         )
       if (raw[4] & 1) != 1:
-        raise ProbeError("probe CONFIGURED REG88 bit 0 does not prove P/E entry")
+        raise ProbeError("probe CONFIGURED FPROTR bit 0 does not prove P/E entry")
     elif tuple(raw) != expected:
       raise ProbeError(f"probe {checkpoint} FACI diagnostic does not match the reviewed state")
     snapshots[checkpoint] = dict(zip(_REGISTERS, raw))

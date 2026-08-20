@@ -1,7 +1,7 @@
 {
   "toolchain": {"gcc": "13.2.0", "binutils": "2.41"},
   "sources": {
-    "probe_pe_cycle.c": "f3e415fbf2929f47ae6b37cab5949ab201aacd90151a2e8f7c7e69e4e47d9ea8",
+    "probe_pe_cycle.c": "b298ea0c9f411eeacbe6fa26b8cad1612d1d076f9bc8ffa6f8c87bf1c2b729f2",
     "crc_probe.c": "72bdc7b1d39cc37b9300b432a38bc2980a1ec1b3964eca80c1e18ee1a43a3432",
     "crc_intermediate.c": "af8822e3e591eddf8ceea8aabecc10660837721c1977fd8694407e7d3ff0f783",
     "crc_verify.c": "3dad26a29df173fd4c416ad3fbae5ffd048d40170ee73622fb5af0c500692f78",
@@ -15,8 +15,8 @@
     "patch_common.h": "6a70bd063680994acf2d2d6373a6747addb0d3a286215be88b70cb9dd2ace42e",
     "patch_protocol.h": "0f3453907819af9814d29b205220e3efb5ba61c476526858580266a9ce870529",
     "crc_runtime.h": "6dfb56121a202293ef238c3a28714f78fb620f325741bf985f032cf4b90d2ff5",
-    "candidate_writer.h": "64eb454aeec24a9b70f3799847beed28eb2ec4859635980ad7a778f5af398157",
-    "faci_dual.h": "90a3c35e2dbcfd96a7801daa20dfb44821753d2bf55d3684a2fca094dab4ea1e",
+    "candidate_writer.h": "47a182f2a6d841078ade3a1893ccb272980e40d004dedb2a6a199b412fa7158d",
+    "faci_dual.h": "67554bbb1181f9798c509f3358f8d8f9bd0ed94870f34f419b69b130fab33c1d",
     "linker.ld": "7921a5eb2c2ca853e88e505da01dc86bff8779be1678ad85756cabe90f44059a",
     "linker_intent.ld": "29c0cc4c8c7a0efc9989b97883cb36986b8f1ffa7dbcfe6249470295dd13366b",
     "build.sh": "f84cb447599771ef0b53c070d923b69aa4ca03686a885b77aa6060f2445adbff"
@@ -26,9 +26,9 @@
     "crc_probe": {"size": 2228, "sha256": "8976ad8024bffa0e8b007a61727ec325319ec4dd1016905dc318133e1edda628"},
     "crc_intermediate": {"size": 2356, "sha256": "502ceb25f563f1e187bf4d328587a360360d610fb3a428f7037ba056bd589f30"},
     "crc_verify": {"size": 1894, "sha256": "5594a6d505b37824d1bed056efdd74cc0542b67851e4fbc9755284350938f34a"},
-    "write_target_candidate": {"size": 4040, "sha256": "2d6210013a172f85e7a30cd34b4177f21cdb147d4552122576e4506dae89cbcd"},
-    "write_crc_candidate": {"size": 4032, "sha256": "677e77f9ea9a3719253b427995360310ec18759cb5daa7ec71db361d1fb9c217"},
-    "restore_sector": {"size": 3956, "sha256": "69f13fe2d8b7be3714ab57c2bcb7288c120f70e7d20341392de4615a82526cd1"},
+    "write_target_candidate": {"size": 4040, "sha256": "8b9729f7104461a861785f3bf5446ac595a75e0dc17e4fd7001ff6470cb8852b"},
+    "write_crc_candidate": {"size": 4032, "sha256": "8df064bc4f2bb66a4c197b9fba96b830e925bf2b868d40451b9bf239e1f0870d"},
+    "restore_sector": {"size": 3956, "sha256": "f4fd6fb5aee9e4483799defa92bfef7c9eed2c1441ea7835f59ab9446d924f7d"},
     "live_read": {"size": 1286, "sha256": "8adccbc840f292db8b3294d2c9e8118680d60b774e50e2a95da00f4bd57ca179"}
   }
 }

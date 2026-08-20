@@ -18,24 +18,24 @@ REVIEWED_PROBE_ENVELOPE_SHA256 = (
 )
 SNAPSHOTS = {
   "PRE": {
-    "FPMON": 0x80, "FASTAT": 0x8000, "FAESTAT": 0, "REG84": 0,
-    "REG88": 0, "REG20": 0, "FLWL": 0, "FLWE": 0,
+    "FPMON": 0x80, "FSTATR": 0x8000, "FASTAT": 0, "FENTRYR": 0,
+    "FPROTR": 0, "FAREASELC": 0, "FHVE15": 0, "FHVE3": 0,
   },
   "UNLOCKED": {
-    "FPMON": 0x80, "FASTAT": 0x8000, "FAESTAT": 0, "REG84": 1,
-    "REG88": 0, "REG20": 0, "FLWL": 0, "FLWE": 0,
+    "FPMON": 0x80, "FSTATR": 0x8000, "FASTAT": 0, "FENTRYR": 1,
+    "FPROTR": 0, "FAREASELC": 0, "FHVE15": 0, "FHVE3": 0,
   },
   "WINDOWS": {
-    "FPMON": 0x80, "FASTAT": 0x8000, "FAESTAT": 0, "REG84": 1,
-    "REG88": 0, "REG20": 0, "FLWL": 1, "FLWE": 1,
+    "FPMON": 0x80, "FSTATR": 0x8000, "FASTAT": 0, "FENTRYR": 1,
+    "FPROTR": 0, "FAREASELC": 0, "FHVE15": 1, "FHVE3": 1,
   },
   "CONFIGURED": {
-    "FPMON": 0x80, "FASTAT": 0x8000, "FAESTAT": 0, "REG84": 1,
-    "REG88": 1, "REG20": 0, "FLWL": 1, "FLWE": 1,
+    "FPMON": 0x80, "FSTATR": 0x8000, "FASTAT": 0, "FENTRYR": 1,
+    "FPROTR": 1, "FAREASELC": 0, "FHVE15": 1, "FHVE3": 1,
   },
   "RESTORED": {
-    "FPMON": 0x80, "FASTAT": 0x8000, "FAESTAT": 0, "REG84": 0,
-    "REG88": 0, "REG20": 0, "FLWL": 0, "FLWE": 0,
+    "FPMON": 0x80, "FSTATR": 0x8000, "FASTAT": 0, "FENTRYR": 0,
+    "FPROTR": 0, "FAREASELC": 0, "FHVE15": 0, "FHVE3": 0,
   },
 }
 
@@ -197,7 +197,7 @@ def test_semantic_loader_accepts_complete_pass_without_fixed_report_digest(valid
     lambda report, metadata, target, crc: report["sectors"]["target"].update(address=TARGET.crc_sector_base),
     lambda report, metadata, target, crc: report["sectors"]["crc"].update(length=TARGET.sector_length - 1),
     lambda report, metadata, target, crc: report["snapshots"]["PRE"].update(FPMON=0),
-    lambda report, metadata, target, crc: report["snapshots"]["CONFIGURED"].update(REG88=0),
+    lambda report, metadata, target, crc: report["snapshots"]["CONFIGURED"].update(FPROTR=0),
     lambda report, metadata, target, crc: report["outcome"].update(primary_code=1),
     lambda report, metadata, target, crc: report["dcra"].update(exit_ctl=1),
     lambda report, metadata, target, crc: report["dcra"].update(original_dcra_raw=0),
@@ -216,7 +216,7 @@ def test_semantic_loader_rejects_non_pass_or_mismatched_evidence(valid_probe, mu
 
 @pytest.mark.parametrize(
   ("register", "value"),
-  (("REG88", -1), ("REG20", 0x10000)),
+  (("FPROTR", -1), ("FAREASELC", 0x10000)),
 )
 def test_semantic_loader_rejects_configured_values_outside_declared_width(
   valid_probe, register, value,

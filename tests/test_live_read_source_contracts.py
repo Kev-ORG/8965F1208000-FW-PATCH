@@ -31,8 +31,8 @@ def test_live_read_has_no_flash_write_faci_or_dcra_capability():
   source = (PAYLOAD / "live_read.c").read_text(encoding="utf-8")
 
   for forbidden in (
-    "faci_dual.h", "dcra.h", "crc_runtime.h", "FACI_", "DCRA_", "FLWE",
-    "FLWL", "erase", "program", "enter_pe", "failure_cleanup", "retry",
+    "faci_dual.h", "dcra.h", "crc_runtime.h", "FACI_", "DCRA_", "FHVE3",
+    "FHVE15", "erase", "program", "enter_pe", "failure_cleanup", "retry",
   ):
     assert forbidden not in source
   assert re.search(r"MMIO(?:8|16|32)\([^)]*\)\s*=", source) is None

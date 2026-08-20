@@ -25,7 +25,7 @@ def test_crc_probe_uses_exact_dcra_contract_and_has_no_flash_write_path():
   ):
     assert value in combined
   for forbidden in (
-    "0xFFA20000", "FACI_CMD8", "0xE8u", "0xD0u", "FLWE_REG", "FLWL_REG",
+    "0xFFA20000", "FACI_CMD8", "0xE8u", "0xD0u", "FHVE3", "FHVE15",
   ):
     assert forbidden not in combined
   assert "crc32_update" in dcra
@@ -89,7 +89,7 @@ def test_crc_payload_sources_are_read_only_and_have_no_steering_can_path():
     assert "0x7A9u" in source
     for forbidden in (
       "0xFFA20000", "0xFFA10030", "0xFFA10034", "0xFFA100E0",
-      "0xFFF82410", "0xFFF8A430", "0x7A1u", "FACI_", "FLWE", "FLWL",
+      "0xFFF82410", "0xFFF8A430", "0x7A1u", "FACI_", "FHVE3", "FHVE15",
       "erase_target", "program_page",
     ):
       assert forbidden not in source

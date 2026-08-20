@@ -14,20 +14,20 @@ def source_text() -> str:
 def test_comprehensive_probe_has_only_reviewed_faci_register_stores():
   source = source_text()
   stores = re.findall(
-    r"\b(FACI_FPCKAR|FACI_FENTRYR|FACI_FREQR|FLWL_REG|FLWE_REG)\s*=\s*"
+    r"\b(FACI_FENTRYR|FACI_FPROTR|FACI_FAREASELC|FHVE15|FHVE3)\s*=\s*"
     r"(0x[0-9A-Fa-f]+u|[01]u)",
     source,
   )
   assert stores == [
-    ("FACI_FPCKAR", "0xAA01u"),
-    ("FLWL_REG", "1u"),
-    ("FLWE_REG", "1u"),
-    ("FACI_FREQR", "0x3B00u"),
-    ("FACI_FENTRYR", "0x5501u"),
-    ("FLWL_REG", "0u"),
-    ("FLWE_REG", "0u"),
-    ("FACI_FENTRYR", "0x5500u"),
-    ("FACI_FPCKAR", "0xAA00u"),
+    ("FACI_FENTRYR", "0xAA01u"),
+    ("FHVE15", "1u"),
+    ("FHVE3", "1u"),
+    ("FACI_FAREASELC", "0x3B00u"),
+    ("FACI_FPROTR", "0x5501u"),
+    ("FHVE15", "0u"),
+    ("FHVE3", "0u"),
+    ("FACI_FPROTR", "0x5500u"),
+    ("FACI_FENTRYR", "0xAA00u"),
   ]
   for forbidden in (
     "0xFFA20000", "0xFFA10030", "0xFFA10034", "0xFFA100E0",
@@ -42,7 +42,7 @@ def test_comprehensive_probe_checks_context_and_idle_before_any_faci_store():
   assert "original_instruction[4] = {0x1D, 0x30, 0xE0, 0xD1}" in source
   assert "if (primary_code == 0u && !equal_bytes(" in source
   assert "snapshot_is_idle(&snapshots[0])" in source
-  first_store = source.index("FACI_FPCKAR = 0xAA01u")
+  first_store = source.index("FACI_FENTRYR = 0xAA01u")
   assert source.index("original_instruction") < first_store
   assert source.index("snapshot_is_idle(&snapshots[0])") < first_store
 
@@ -54,7 +54,7 @@ def test_comprehensive_probe_keeps_magic_and_instruction_pre_gates_before_faci_a
   assert "(volatile uint8_t *)(PATCH_ADDRESS - 3u), original_instruction, 4u" in re.sub(
     r"\s+", " ", source,
   )
-  first_store = source.index("FACI_FPCKAR = 0xAA01u")
+  first_store = source.index("FACI_FENTRYR = 0xAA01u")
   assert source.index("magic0 != MAGIC_WORD || magic1 != MAGIC_WORD") < first_store
   assert instruction_gate < first_store
 
@@ -119,13 +119,13 @@ def test_comprehensive_probe_uses_bounded_polls_and_stage_aware_exact_cleanup():
     "wait_register_masked(0xFFA10084u, 2u, 0x0081u, 0u",
   ):
     assert call in source
-  for flag in ("unlock_attempted", "flwl_attempted", "flwe_attempted", "fentry_attempted"):
+  for flag in ("unlock_attempted", "fhve15_attempted", "fhve3_attempted", "fprotr_attempted"):
     assert flag in source
   cleanup_stores = [
-    source.rindex("FLWL_REG = 0u"),
-    source.rindex("FLWE_REG = 0u"),
-    source.rindex("FACI_FENTRYR = 0x5500u"),
-    source.rindex("FACI_FPCKAR = 0xAA00u"),
+    source.rindex("FHVE15 = 0u"),
+    source.rindex("FHVE3 = 0u"),
+    source.rindex("FACI_FPROTR = 0x5500u"),
+    source.rindex("FACI_FENTRYR = 0xAA00u"),
   ]
   assert cleanup_stores == sorted(cleanup_stores)
   for bit in ("0x0001u", "0x0002u", "0x0004u", "0x0008u", "0x0010u"):

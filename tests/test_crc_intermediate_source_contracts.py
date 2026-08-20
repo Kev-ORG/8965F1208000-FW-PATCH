@@ -14,7 +14,7 @@ def test_intermediate_is_read_only_and_requires_exact_intermediate_context():
   assert "PROTO_OP_CRC_INTERMEDIATE" in source
   for forbidden in (
     "0xFFA20000", "0xFFA10030", "0xFFA10034", "FSADDR", "FEADDR",
-    "FLWE", "FLWL", "erase_sector", "program_sector", "0x191", "STEERING_LTA",
+    "FHVE3", "FHVE15", "erase_sector", "program_sector", "0x191", "STEERING_LTA",
   ):
     assert forbidden not in combined
 

@@ -424,7 +424,7 @@ def test_probe_protocol_layout_is_one_two_region_crc_and_faci_stream():
 
 @pytest.mark.parametrize(
   ("slot", "value", "register"),
-  ((28, -1, "REG88"), (29, 0x10000, "REG20")),
+  ((28, -1, "FPROTR"), (29, 0x10000, "FAREASELC")),
 )
 def test_probe_rejects_configured_values_outside_declared_width(
   probe_case, slot, value, register,

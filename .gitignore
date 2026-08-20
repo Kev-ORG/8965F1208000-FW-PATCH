@@ -25,3 +25,6 @@ __pycache__/
 !/payload/build/
 !/payload/build/*.bin
 !/payload/build/manifest.json
+
+# uv-generated lockfile (ephemeral, not a reviewed runtime input)
+uv.lock

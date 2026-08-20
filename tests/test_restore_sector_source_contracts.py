@@ -48,11 +48,11 @@ def test_restore_uses_retained_patch_runtime_and_bounded_nonretrying_faci_sequen
   header = (ROOT / "payload" / "faci_dual.h").read_text()
   assert '#include "patch_common.h"' in source
   for token in (
-    "FACI_REG84 = 0xAA01u", "FLWL_REG = 1u", "FLWE_REG = 1u",
-    "FACI_REG20 = 0x3B00u", "FACI_REG88 = 0x5501u", "FACI_FASR = 1u",
+    "FACI_FENTRYR = 0xAA01u", "FHVE15 = 1u", "FHVE3 = 1u",
+    "FACI_FAREASELC = 0x3B00u", "FACI_FPROTR = 0x5501u", "FACI_FPSADDR = 1u",
     "FACI_CMD8 = 0x20u", "FACI_CMD8 = 0xD0u", "FACI_CMD8 = 0xE8u",
-    "FACI_CMD8 = 0x80u", "FLWL_REG = 0u", "FLWE_REG = 0u",
-    "FACI_REG88 = 0x5500u", "FACI_REG84 = 0xAA00u",
+    "FACI_CMD8 = 0x80u", "FHVE15 = 0u", "FHVE3 = 0u",
+    "FACI_FPROTR = 0x5500u", "FACI_FENTRYR = 0xAA00u",
     "FRDY_LIMIT", "DBFULL_LIMIT", "feed_watchdog",
   ):
     assert token in header

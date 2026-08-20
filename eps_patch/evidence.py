@@ -227,11 +227,11 @@ def _validate_snapshots(value: object) -> None:
         raise EvidenceError(
           f"{checkpoint} {name} exceeds its declared diagnostic width"
         )
-      if checkpoint == "CONFIGURED" and name == "REG20":
+      if checkpoint == "CONFIGURED" and name == "FAREASELC":
         continue
-      if checkpoint == "CONFIGURED" and name == "REG88":
+      if checkpoint == "CONFIGURED" and name == "FPROTR":
         if (snapshot[name] & 1) != 1:
-          raise EvidenceError("CONFIGURED REG88 bit 0 does not prove P/E entry")
+          raise EvidenceError("CONFIGURED FPROTR bit 0 does not prove P/E entry")
         continue
       if snapshot[name] != wanted:
         raise EvidenceError(f"{checkpoint} FACI snapshot has an unexpected {name} value")

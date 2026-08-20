@@ -133,8 +133,8 @@ def test_compact_writer_takes_complete_idle_snapshot_without_stack_copy_helpers(
   assert "exact_idle(" not in exploit
   idle = header[header.index("static int candidate_exact_idle_snapshot") : header.index("static void write_candidate_exploit")]
   for register in (
-    "FACI_FPMON", "FACI_FASTAT", "FACI_FAESTAT", "FACI_REG84",
-    "FACI_REG88", "FACI_REG20", "FLWL_REG", "FLWE_REG",
+    "FACI_FPMON", "FACI_FSTATR", "FACI_FASTAT", "FACI_FENTRYR",
+    "FACI_FPROTR", "FACI_FAREASELC", "FHVE15", "FHVE3",
   ):
     assert register in idle
   assert "mismatch |=" in idle

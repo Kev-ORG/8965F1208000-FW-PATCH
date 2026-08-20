@@ -152,13 +152,13 @@ static void send_candidate_result(
 
 static int candidate_exact_idle_snapshot(void) {
   uint32_t mismatch=FACI_FPMON^0x80u;
-  mismatch |= FACI_FASTAT^0x8000u;
-  mismatch |= FACI_FAESTAT;
-  mismatch |= FACI_REG84;
-  mismatch |= FACI_REG88;
-  mismatch |= FACI_REG20;
-  mismatch |= FLWL_REG;
-  mismatch |= FLWE_REG;
+  mismatch |= FACI_FSTATR^0x8000u;
+  mismatch |= FACI_FASTAT;
+  mismatch |= FACI_FENTRYR;
+  mismatch |= FACI_FPROTR;
+  mismatch |= FACI_FAREASELC;
+  mismatch |= FHVE15;
+  mismatch |= FHVE3;
   return mismatch==0u;
 }
 
