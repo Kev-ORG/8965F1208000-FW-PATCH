@@ -2,6 +2,8 @@
 
 [English](#english) · [中文](#中文)
 
+[![CI](https://github.com/lochuan/8965B4512000-FW-PATCH/actions/workflows/ci.yml/badge.svg)](https://github.com/lochuan/8965B4512000-FW-PATCH/actions/workflows/ci.yml)
+
 This repository provides a deliberately narrow, comma-local workflow for the reviewed `8965B4512000` EPS on a stationary private bench. Its public commands are only `probe`, `patch`, and `restore`.
 
 Verified working on a **2024 Toyota RAV4 Prime** and a **2026 Toyota Sienna (PRC made)**.
