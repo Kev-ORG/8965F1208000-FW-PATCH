@@ -170,7 +170,7 @@ def test_restore_sector_stream_rejects_unreviewed_base_and_false_success():
 
 CRC_VALUES = (
   0, 0xFFFFFFFF, 0x18000, 0xFFDF0, 0xFFDEC,
-  0x0962887F, 0xBE36F00D, 0x41C90FF2,
+  0xAD59D70C, 0x22A0EB88, 0xDD5F1477,
   0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
   0, 0xFFFFFFFF, 0x8000, 0x88341866,
 )
@@ -414,11 +414,11 @@ def _valid_intermediate_fixture():
   target = bytearray(TARGET.sector_length)
   target[TARGET.instruction_offset:TARGET.instruction_offset + 4] = TARGET.patched_instruction
   crc_source = bytearray(TARGET.sector_length)
-  crc_source[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = bytes.fromhex("7f886209")
+  crc_source[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4] = bytes.fromhex("0cd759ad")
   crc_source[0x7E00:0x7E04] = TARGET.magic_word.to_bytes(4, "little")
   values = (
     0x10203040, 0x50607080, TARGET.crc_range_start, TARGET.crc_range_end,
-    TARGET.crc_adjust_address, 0x0962887F, 0xBE36F00D, 0x41C90FF2,
+    TARGET.crc_adjust_address, 0xAD59D70C, 0x22A0EB88, 0xDD5F1477,
     0x12345678, 0xFFFFFFFF, 0x12345678, 0xFFFFFFFF,
     0x10203040, 0x50607080, 0, 0,
   )

@@ -69,9 +69,12 @@ class TargetManifest:
     return 0x8000 + self.pure_code_file_offset(address)
 
   def validate(self) -> None:
-    if self.part_number != b"8965B4512000" or not self.part_number.isascii():
+    if self.part_number != b"8965F1208000" or not self.part_number.isascii():
       raise ValueError("unsupported EPS part number")
-    if self.application_software_id != b"\x01" + self.part_number + bytes(4):
+    _expected_app_sw_id = (
+      b"\x02" + b"8965F1208000" + bytes(4) + b"8A3111202000" + bytes(4)
+    )
+    if self.application_software_id != _expected_app_sw_id:
       raise ValueError("application software identity is not the exact target F181 record")
     if self.boot_software_id != b"\x02" + (b"!" * 32):
       raise ValueError("boot software identity is not the exact target boot F181 record")
@@ -102,7 +105,7 @@ class TargetManifest:
       self.crc_patched_prefix_sw,
       self.crc_patched_adjust_word,
       self.crc_residue,
-    ) != (0x0962887F, 0xBE36F00D, 0x41C90FF2, 0xFFFFFFFF):
+    ) != (0xAD59D70C, 0x22A0EB88, 0xDD5F1477, 0xFFFFFFFF):
       raise ValueError("CRC constants do not match the reviewed original and patched states")
     if self.crc_patched_prefix_sw ^ self.crc_residue != self.crc_patched_adjust_word:
       raise ValueError("CRC patched adjustment does not match the reviewed residue formula")
@@ -139,18 +142,20 @@ class TargetManifest:
 
 
 TARGET = TargetManifest(
-  part_number=b"8965B4512000",
-  application_software_id=b"\x018965B4512000\x00\x00\x00\x00",
+  part_number=b"8965F1208000",
+  application_software_id=(
+    b"\x02" + b"8965F1208000" + bytes(4) + b"8A3111202000" + bytes(4)
+  ),
   boot_software_id=b"\x02" + (b"!" * 32),
   new_uds=False,
   sector_base=0x88000,
   sector_length=0x8000,
-  instruction_address=0x8E6C4,
-  patch_address=0x8E6C7,
+  instruction_address=0x88C60,
+  patch_address=0x88C63,
   original_instruction=bytes.fromhex("1d 30 e0 d1"),
   patched_instruction=bytes.fromhex("1d 30 e0 01"),
-  original_sha256="281a0ef918a1bd8e709bb579a7f19163d3e908eedb5bdf79ad7348c701177b01",
-  patched_sha256="9cd2d94f618542ab24b7e60446230af8e677b84914fa53003b806a2b2e69021b",
+  original_sha256="30cf2e0907cbbec3401cc1650e6bd298f5aa1e5e72dab4f39335d499243dd539",
+  patched_sha256="272f303f877702b339ed7d9cfd1700888829a147ce6d89102d1b27610b9938f3",
   magic_addresses=(0x17E00, 0xFFE00),
   magic_word=0x5AA5A55A,
   uds_request_id=0x7A1,
@@ -171,9 +176,9 @@ TARGET = TargetManifest(
   crc_sector_base=0xF8000,
   crc_sector_end=0x100000,
   crc_adjust_address=0xFFDEC,
-  crc_original_adjust_word=0x0962887F,
-  crc_patched_prefix_sw=0xBE36F00D,
-  crc_patched_adjust_word=0x41C90FF2,
+  crc_original_adjust_word=0xAD59D70C,
+  crc_patched_prefix_sw=0x22A0EB88,
+  crc_patched_adjust_word=0xDD5F1477,
   crc_residue=0xFFFFFFFF,
 )
 TARGET.validate()

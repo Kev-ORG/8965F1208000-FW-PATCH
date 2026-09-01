@@ -1096,8 +1096,8 @@ def test_restore_crc_first_then_target_with_fresh_identity_and_exact_confirmatio
     "live_read", "restore_sector", "live_read", "restore_sector",
   ]
   assert len(confirmations) == 2
-  assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")
-  assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x88000 ")
+  assert confirmations[0].startswith("RESTORE-SECTOR 8965F1208000 0xf8000 ")
+  assert confirmations[1].startswith("RESTORE-SECTOR 8965F1208000 0x88000 ")
   incident_digest = sha256_bytes(incident_path.read_bytes())
   assert all(incident_digest in prompt for prompt in confirmations)
   assert any("CRC_COMMITTED -> TARGET_LIVE_PRECHECKED" in prompt for prompt in power_prompts)

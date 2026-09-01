@@ -425,8 +425,8 @@ def test_patch_preserves_two_sector_order_confirmations_and_reconnects(tmp_path)
     "verify", "verify",
   ]
   assert len(confirmations) == 2
-  assert confirmations[0].startswith("WRITE-TARGET 8965B4512000 0x88000 ")
-  assert confirmations[1].startswith("WRITE-CRC 8965B4512000 0xf8000 ")
+  assert confirmations[0].startswith("WRITE-TARGET 8965F1208000 0x88000 ")
+  assert confirmations[1].startswith("WRITE-CRC 8965F1208000 0xf8000 ")
   assert all("->" in prompt for prompt in confirmations)
 
 
@@ -792,7 +792,7 @@ def test_patch_reconciles_crc_source_read_only_before_one_manual_retry(tmp_path)
     ("retry-writer", "payload", OP_WRITE_CRC_CANDIDATE),
   ]
   assert len(confirmations) == 1
-  assert confirmations[0].startswith("WRITE-CRC 8965B4512000 0xf8000 ")
+  assert confirmations[0].startswith("WRITE-CRC 8965F1208000 0xf8000 ")
 
 
 def test_patch_reconciles_complete_crc_candidate_without_rewriting(tmp_path):

@@ -58,7 +58,8 @@ class FakeUds:
     entered_programming = ("session", 2) in self.calls
     return (
       b"\x02" + (b"!" * 32)
-      if entered_programming else b"\x01" + b"8965B4512000" + bytes(4)
+      if entered_programming
+      else b"\x02" + b"8965F1208000" + bytes(4) + b"8A3111202000" + bytes(4)
     )
 
   def diagnostic_session_control(self, session):
@@ -122,7 +123,7 @@ def test_transport_opens_current_panda_and_uds_shape_and_closes():
     assert panda.safety == [42]
     assert uds.constructor[1:] == (0x7A1, 0x7A9, 0, 0.2, 10.0)
     identity = transport.read_identity()
-    assert identity.part_number == b"8965B4512000"
+    assert identity.part_number == b"8965F1208000"
     assert identity.panda_serial == "abc"
     assert identity.boot_software_id == b"\x02" + (b"!" * 32)
     assert [call for call in uds.calls if call[0] == "read"] == [
@@ -138,13 +139,13 @@ def test_transport_opens_current_panda_and_uds_shape_and_closes():
 def test_transport_rejectable_identity_preserves_raw_application_bytes():
   from eps_patch.transport import EcuTransport
 
-  application = b"\x01" + b"8965B4512000" + bytes(4)
+  application = b"\x02" + b"8965F1208000" + bytes(4) + b"8A3111202000" + bytes(4)
   with EcuTransport(bindings=fake_bindings([])) as transport:
     reads = iter((application, b"\x01" + b"8965H0000000" + bytes(4)))
     FakeUds.instances[-1].read_data_by_identifier = lambda _did: next(reads)
     identity = transport.read_identity()
 
-  assert identity.part_number == b"8965B4512000"
+  assert identity.part_number == b"8965F1208000"
   assert identity.application_software_id == application
 
 

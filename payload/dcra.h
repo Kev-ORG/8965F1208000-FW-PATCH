@@ -7,7 +7,7 @@
 #define CRC_RANGE_START 0x00018000u
 #define CRC_RANGE_END 0x000FFDF0u
 #define CRC_PATCH_VALUE 0x01u
-#define CRC_PATCHED_ADJUST_WORD 0x41C90FF2u
+#define CRC_PATCHED_ADJUST_WORD 0xDD5F1477u
 
 static uint32_t dcra_full_raw(
   uint8_t hypothetical,

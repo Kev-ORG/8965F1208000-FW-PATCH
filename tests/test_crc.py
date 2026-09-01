@@ -20,19 +20,19 @@ def test_candidate_changes_only_rx_byte_and_crc_word():
   from eps_patch.crc import build_crc_candidate
 
   target = bytearray(0x8000)
-  target[0x66C4:0x66C8] = bytes.fromhex("1d 30 e0 d1")
+  target[0x0C60:0x0C64] = bytes.fromhex("1d 30 e0 d1")
   crc = bytearray([0xA5]) * 0x8000
   crc[0x7E00:0x7E04] = (0x5AA5A55A).to_bytes(4, "little")
-  crc[0x7DEC:0x7DF0] = bytes.fromhex("7f886209")
+  crc[0x7DEC:0x7DF0] = bytes.fromhex("0cd759ad")
 
-  result = build_crc_candidate(bytes(target), bytes(crc), bytes.fromhex("f20fc941"))
+  result = build_crc_candidate(bytes(target), bytes(crc), bytes.fromhex("77145fdd"))
 
-  assert result.target_final[0x66C7] == 0x01
-  assert result.crc_final[0x7DEC:0x7DF0] == bytes.fromhex("f20fc941")
+  assert result.target_final[0x0C63] == 0x01
+  assert result.crc_final[0x7DEC:0x7DF0] == bytes.fromhex("77145fdd")
   assert result.absolute_diffs == (
-    (0x8E6C7, 0xD1, 0x01),
-    (0xFFDEC, 0x7F, 0xF2), (0xFFDED, 0x88, 0x0F),
-    (0xFFDEE, 0x62, 0xC9), (0xFFDEF, 0x09, 0x41),
+    (0x88C63, 0xD1, 0x01),
+    (0xFFDEC, 0x0C, 0x77), (0xFFDED, 0xD7, 0x14),
+    (0xFFDEE, 0x59, 0x5F), (0xFFDEF, 0xAD, 0xDD),
   )
 
 
@@ -42,7 +42,7 @@ def test_candidate_rejects_an_invalid_replaced_manifest():
   from eps_patch.manifest import TARGET
 
   target = bytearray(0x8000)
-  target[0x66C4:0x66C8] = bytes.fromhex("1d 30 e0 d1")
+  target[0x0C60:0x0C64] = bytes.fromhex("1d 30 e0 d1")
   invalid_target = replace(TARGET, crc_adjust_address=0xFFDE8)
 
   with pytest.raises(ValueError, match="CRC adjustment word"):

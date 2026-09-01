@@ -85,7 +85,7 @@ def test_comprehensive_probe_streams_two_full_regions_crc_dcra_magic_and_40_diag
   assert "dcra_full_raw(0u, &guard)" in source
   assert "dcra_full_raw(1u, &guard)" in source
   dcra = DCRA_PATH.read_text(encoding="utf-8")
-  assert "CRC_PATCHED_ADJUST_WORD 0x41C90FF2u" in dcra
+  assert "CRC_PATCHED_ADJUST_WORD 0xDD5F1477u" in dcra
   restore = dcra[dcra.index("static uint32_t restore_dcra"):]
   assert "(ctl & 3u) != 0u" in restore
   assert "DCRA_COUT = cout ^ 0xFFFFFFFFu" in restore

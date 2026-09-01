@@ -3,8 +3,8 @@
 #include "patch_common.h"
 #include "crc_runtime.h"
 
-#define ORIGINAL_ADJUST 0x0962887Fu
-#define CRC_CANDIDATE_ADJUST 0x41C90FF2u
+#define ORIGINAL_ADJUST 0xAD59D70Cu
+#define CRC_CANDIDATE_ADJUST 0xDD5F1477u
 #define CRC_MAGIC_OFFSET 0x7E00u
 
 void exploit(void) __attribute__((section(".text.entry"),used,noreturn));

@@ -13,7 +13,7 @@ def test_candidate_writer_image_contains_only_local_candidate_authorization():
 def test_candidate_writer_locks_the_corrected_crc_adjustment_word():
   from eps_patch.candidate_writer import CANDIDATE_ADJUSTMENT
 
-  assert CANDIDATE_ADJUSTMENT == bytes.fromhex("f20fc941")
+  assert CANDIDATE_ADJUSTMENT == bytes.fromhex("77145fdd")
 
 
 @pytest.mark.parametrize("operation", (13, 14))

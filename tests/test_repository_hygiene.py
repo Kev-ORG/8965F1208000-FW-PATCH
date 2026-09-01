@@ -66,7 +66,7 @@ def test_gitignore_covers_python_environments_caches_and_local_tools():
 def test_reviewed_primitive_package_is_importable():
   from eps_patch import TARGET
 
-  assert TARGET.part_number == b"8965B4512000"
+  assert TARGET.part_number == b"8965F1208000"
 
 
 def test_legacy_payload_operations_and_artifact_workflow_are_not_retained():

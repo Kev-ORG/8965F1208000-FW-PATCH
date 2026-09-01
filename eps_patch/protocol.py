@@ -627,7 +627,7 @@ def validate_crc_intermediate(result: StreamResult) -> CrcObservation:
     target_sector[TARGET.instruction_offset:TARGET.instruction_offset + 4]
       != TARGET.patched_instruction
     or crc_sector[TARGET.crc_adjust_offset:TARGET.crc_adjust_offset + 4]
-      != bytes.fromhex("7f886209")
+      != TARGET.crc_original_adjust_word.to_bytes(4, "little")
     or crc_sector[0x7E00:0x7E04] != TARGET.magic_word.to_bytes(4, "little")
   ):
     raise ProtocolError("intermediate live or staged sector context is invalid")
@@ -650,8 +650,8 @@ def validate_crc_intermediate(result: StreamResult) -> CrcObservation:
     crc.range_start != TARGET.crc_range_start
     or crc.range_end != TARGET.crc_range_end
     or crc.adjust_address != TARGET.crc_adjust_address
-    or crc.old_adjust_word != 0x0962887F
-    or crc.new_adjust_word != 0x41C90FF2
+    or crc.old_adjust_word != TARGET.crc_original_adjust_word
+    or crc.new_adjust_word != TARGET.crc_patched_adjust_word
     or crc.patched_prefix_sw != (crc.new_adjust_word ^ 0xFFFFFFFF)
     or crc.original_sw_full != crc.original_dcra_raw
     or crc.original_sw_full == 0xFFFFFFFF

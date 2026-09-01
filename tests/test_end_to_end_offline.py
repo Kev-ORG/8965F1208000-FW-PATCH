@@ -584,7 +584,7 @@ def test_supplied_legacy_crc_incident_uses_one_corrected_route_writer(tmp_path):
     if transition["result"] == "CRC_ARMED"
   ]
   assert len(confirmations) == 1
-  assert confirmations[0].startswith("WRITE-CRC 8965B4512000 0xf8000 ")
+  assert confirmations[0].startswith("WRITE-CRC 8965F1208000 0xf8000 ")
   assert crc_arms[-1]["evidence"]["confirmation"] == confirmations[0]
 
 
@@ -648,8 +648,8 @@ def test_restore_routes_crc_before_target_after_fresh_live_reads(tmp_path):
     bytes.fromhex("31 01 ff 00 45 00 00 0e 00 00 00 00 80 00"),
   ]
   assert len(confirmations) == 2
-  assert confirmations[0].startswith("RESTORE-SECTOR 8965B4512000 0xf8000 ")
-  assert confirmations[1].startswith("RESTORE-SECTOR 8965B4512000 0x88000 ")
+  assert confirmations[0].startswith("RESTORE-SECTOR 8965F1208000 0xf8000 ")
+  assert confirmations[1].startswith("RESTORE-SECTOR 8965F1208000 0x88000 ")
   armed = [
     transition["evidence"]["confirmation"]
     for transition in state["transitions"]

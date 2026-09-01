@@ -6,19 +6,19 @@ import pytest
 def test_target_manifest_locks_patch_to_one_known_byte():
   from eps_patch.manifest import TARGET
 
-  assert TARGET.part_number == b"8965B4512000"
+  assert TARGET.part_number == b"8965F1208000"
   assert (TARGET.sector_base, TARGET.sector_length) == (0x88000, 0x8000)
   assert TARGET.sector_end == 0x90000
-  assert TARGET.instruction_address == 0x8E6C4
-  assert TARGET.patch_address == 0x8E6C7
-  assert TARGET.patch_offset == 0x66C7
-  assert TARGET.instruction_offset == 0x66C4
-  assert TARGET.pure_code_file_offset(TARGET.patch_address) == 0x8E6C7
-  assert TARGET.wide_image_file_offset(TARGET.patch_address) == 0x8E6C7 + 0x8000
+  assert TARGET.instruction_address == 0x88C60
+  assert TARGET.patch_address == 0x88C63
+  assert TARGET.patch_offset == 0x0C63
+  assert TARGET.instruction_offset == 0x0C60
+  assert TARGET.pure_code_file_offset(TARGET.patch_address) == 0x88C63
+  assert TARGET.wide_image_file_offset(TARGET.patch_address) == 0x88C63 + 0x8000
   assert TARGET.original_instruction == bytes.fromhex("1d 30 e0 d1")
   assert TARGET.patched_instruction == bytes.fromhex("1d 30 e0 01")
-  assert TARGET.original_sha256 == "281a0ef918a1bd8e709bb579a7f19163d3e908eedb5bdf79ad7348c701177b01"
-  assert TARGET.patched_sha256 == "9cd2d94f618542ab24b7e60446230af8e677b84914fa53003b806a2b2e69021b"
+  assert TARGET.original_sha256 == "30cf2e0907cbbec3401cc1650e6bd298f5aa1e5e72dab4f39335d499243dd539"
+  assert TARGET.patched_sha256 == "272f303f877702b339ed7d9cfd1700888829a147ce6d89102d1b27610b9938f3"
 
 
 def test_target_manifest_locks_transport_and_boot_markers():
@@ -28,7 +28,9 @@ def test_target_manifest_locks_transport_and_boot_markers():
   assert TARGET.magic_word == 0x5AA5A55A
   assert (TARGET.uds_request_id, TARGET.uds_response_id, TARGET.bus) == (0x7A1, 0x7A9, 0)
   assert (TARGET.ram_address, TARGET.envelope_length) == (0xFEBF0000, 0x1000)
-  assert TARGET.application_software_id == b"\x018965B4512000\x00\x00\x00\x00"
+  assert TARGET.application_software_id == (
+    b"\x02" + b"8965F1208000" + bytes(4) + b"8A3111202000" + bytes(4)
+  )
   assert TARGET.boot_software_id == b"\x02" + (b"!" * 32)
   assert TARGET.new_uds is False
 
@@ -39,9 +41,9 @@ def test_crc_manifest_uses_physical_addresses_without_translation():
   assert (TARGET.crc_range_start, TARGET.crc_range_end) == (0x18000, 0xFFDF0)
   assert (TARGET.crc_sector_base, TARGET.crc_sector_end) == (0xF8000, 0x100000)
   assert TARGET.crc_adjust_address == 0xFFDEC
-  assert TARGET.crc_original_adjust_word == 0x0962887F
-  assert TARGET.crc_patched_prefix_sw == 0xBE36F00D
-  assert TARGET.crc_patched_adjust_word == 0x41C90FF2
+  assert TARGET.crc_original_adjust_word == 0xAD59D70C
+  assert TARGET.crc_patched_prefix_sw == 0x22A0EB88
+  assert TARGET.crc_patched_adjust_word == 0xDD5F1477
   assert TARGET.crc_residue == 0xFFFFFFFF
   assert TARGET.crc_patched_prefix_sw ^ TARGET.crc_residue == TARGET.crc_patched_adjust_word
   assert TARGET.pure_code_file_offset(TARGET.crc_adjust_address) == 0xFFDEC
