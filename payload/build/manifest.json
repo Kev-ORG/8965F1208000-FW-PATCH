@@ -19,13 +19,13 @@
     "faci_dual.h": "5844bf016c17ca8af712b313d7666e1ece01315bc0860ff5f2a133aba5c69b44",
     "linker.ld": "4d0cd4ea92814d765a67c24eac46c32e18f3cb2d3b3090ea51ba870698e61a9a",
     "linker_intent.ld": "1e32cfacbf711bc70bf85cc4f92cd2eb5aa16f3bd0d755b15b7ff058fc73ca52",
-    "build.sh": "9c3d2483a260f6581fdc961c8c56e7efa59ae2ab725199eb2575483097cb5f92"
+    "build.sh": "f84cb447599771ef0b53c070d923b69aa4ca03686a885b77aa6060f2445adbff"
   },
   "payloads": {
-    "probe_pe_cycle": {"size": 2940, "sha256": "d869833ab09a3d48a23aff22f7ce1746ab43b2909d6331e4bd3344fb483430ff", "entrypoint": "0xfebf0000"},
-    "crc_probe": {"size": 2228, "sha256": "8976ad8024bffa0e8b007a61727ec325319ec4dd1016905dc318133e1edda628"},
-    "crc_intermediate": {"size": 2356, "sha256": "502ceb25f563f1e187bf4d328587a360360d610fb3a428f7037ba056bd589f30"},
-    "crc_verify": {"size": 1894, "sha256": "5594a6d505b37824d1bed056efdd74cc0542b67851e4fbc9755284350938f34a"},
+    "probe_pe_cycle": {"size": 2940, "sha256": "68b8d1a4e9061312d8c5042bc720edf62d4351304f42423ab2f3397c78dc35a5", "entrypoint": "0xfebf0000"},
+    "crc_probe": {"size": 2228, "sha256": "d4234cbdcc06ddddc05a4c903550397c46d967a6571412503a0743f48710d221"},
+    "crc_intermediate": {"size": 2356, "sha256": "0ceec83abe82b7701a0b34ec2dc58c9bccff7d504b87489c48ff8d438aa9d2c6"},
+    "crc_verify": {"size": 1894, "sha256": "857ea5890249c0da726b7d6171259b0dbcb901063f6ccdaa1885c7f7ea29bf8b"},
     "write_target_candidate": {"size": 4040, "sha256": "8b9729f7104461a861785f3bf5446ac595a75e0dc17e4fd7001ff6470cb8852b"},
     "write_crc_candidate": {"size": 4032, "sha256": "8df064bc4f2bb66a4c197b9fba96b830e925bf2b868d40451b9bf239e1f0870d"},
     "restore_sector": {"size": 3956, "sha256": "f4fd6fb5aee9e4483799defa92bfef7c9eed2c1441ea7835f59ab9446d924f7d"},
