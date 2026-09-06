@@ -1,12 +1,12 @@
-# 8965B4512000 EPS Patch
+# 8965F1208000 EPS Patch
 
 [English](#english) · [中文](#中文)
 
-[![CI](https://github.com/lochuan/8965B4512000-FW-PATCH/actions/workflows/ci.yml/badge.svg)](https://github.com/lochuan/8965B4512000-FW-PATCH/actions/workflows/ci.yml)
+[![CI](https://github.com/Kev-ORG/8965F1208000-FW-PATCH/actions/workflows/ci.yml/badge.svg)](https://github.com/Kev-ORG/8965F1208000-FW-PATCH/actions/workflows/ci.yml)
 
-This repository provides a deliberately narrow, comma-local workflow for the reviewed `8965B4512000` EPS on a stationary private bench. Its public commands are only `probe`, `patch`, and `restore`.
+This repository provides a deliberately narrow, comma-local workflow for the reviewed `8965F1208000` EPS on a stationary private bench. Its public commands are only `probe`, `patch`, and `restore`.
 
-Verified working on a **2024 Toyota RAV4 Prime** and a **2026 Toyota Sienna (PRC made)**.
+Verified working on a **2023 Toyota Corolla (US-made, VIN prefix 5)**.
 
 # English
 
@@ -14,7 +14,7 @@ Verified working on a **2024 Toyota RAV4 Prime** and a **2026 Toyota Sienna (PRC
 
 Read this chapter before connecting a Panda or powering the EPS.
 
-- This repository supports only the reviewed `8965B4512000` firmware, old-UDS transport, Flash layout, payload set, and stationary bench configuration. It is not a general ECU flasher.
+- This repository supports only the reviewed `8965F1208000` firmware, old-UDS transport, Flash layout, payload set, and stationary bench configuration. It is not a general ECU flasher.
 - Flash erase/program can leave the EPS unavailable. Use stable bench power, preserve the original probe backups, and have a realistic external programmer or professional recovery plan before patching.
 - A planned power cycle is part of the workflow. Unexpected external power loss while a writer is erasing or programming is outside the supported workflow. Treat the result as indeterminate; never automatically retry it.
 - Run `patch` and `restore` only in a visible foreground interactive SSH TTY. Do not pipe input, run them in the background, wrap them in unattended automation, or automate the authorization response.
@@ -29,7 +29,7 @@ If any displayed identity, sector address, source digest, candidate digest, CRC,
 ### 1.1 What you need
 
 - A clean local checkout of this repository.
-- The stationary `8965B4512000` EPS bench with stable power.
+- The stationary `8965F1208000` EPS bench with stable power.
 - A comma and Panda connected exactly as used during the reviewed bench work.
 - SSH access that returns after the vehicle/EPS/comma power cycle.
 - Openpilot Python `3.12.3` or newer, but lower than `3.13`.
@@ -297,7 +297,7 @@ RequestDownload is 4 KiB because it carries executable payload code, not a secto
 
 The reviewed target change is a single control-flow byte in the `0x88000` sector. The four-byte aligned instruction word at `0x8E6C4` is `0xD1E0301D` in the original firmware and `0x01E0301D` after the patch: only byte `0x8E6C7` changes, from `0xD1` to `0x01`. That byte is the low byte of the 16-bit instruction `cmp r0, r26`; changing it to `cmp r0, r0` forces the always-equal condition and permanently neutralizes the following conditional branch, which is the reviewed control-flow bypass.
 
-Because boot integrity covers that change, the CRC-sector adjustment word at `0xFFDEC` must also change. On the reviewed firmware the patched-prefix CRC is `0xBE36F00D` and the candidate adjustment word is `0x41C90FF2`, so the full Code Flash range CRC residue stays `0xFFFFFFFF`. This is why a complete patch requires both `0x88000` and `0xF8000` rather than only the instruction byte.
+Because boot integrity covers that change, the CRC-sector adjustment word at `0xFFDEC` must also change. On the reviewed firmware the patched-prefix CRC is `0x22A0EB88` and the candidate adjustment word is `0xDD5F1477`, so the full Code Flash range CRC residue stays `0xFFFFFFFF`. This is why a complete patch requires both `0x88000` and `0xF8000` rather than only the instruction byte.
 
 The current `original_sha256` and `patched_sha256` values in `eps_patch/manifest.py` are the digests of the reviewed target sector before and after this single-byte change. This patch point, the adjustment word, and the sector digests were captured from the actual bench vehicle and validated end to end with a full `probe → patch → verify` run.
 
@@ -507,7 +507,7 @@ Yes. The FACI sequence is byte-identical to the flash shellcode in Toyota's Cali
 
 连接 Panda 或给 EPS 上电前，请先完整阅读本章。
 
-- 本仓库只支持已经审查的 `8965B4512000` 固件、旧版 UDS 传输、Flash 布局、payload 集合和静止台架配置。它不是通用 ECU 刷写器。
+- 本仓库只支持已经审查的 `8965F1208000` 固件、旧版 UDS 传输、Flash 布局、payload 集合和静止台架配置。它不是通用 ECU 刷写器。
 - 擦除或写入 Flash 可能导致 EPS 不可用。开始 patch 前必须准备稳定台架电源、保留原始 probe 备份，并具备现实可用的外部编程器或专业恢复方案。
 - 计划性断电重启是流程的一部分。writer 正在擦除或写入时发生意外外部断电，不属于支持范围；必须把结果视为不确定，绝不能自动重试。
 - `patch` 和 `restore` 只能在可见、前台、可交互的 SSH TTY 中运行。不要通过管道输入、后台任务、无人值守自动化或自动回答确认提示运行。
@@ -522,7 +522,7 @@ Yes. The FACI sequence is byte-identical to the flash shellcode in Toyota's Cali
 ### 1.1 所需条件
 
 - 本仓库在电脑上的干净 checkout。
-- 稳定供电的静止 `8965B4512000` EPS 台架。
+- 稳定供电的静止 `8965F1208000` EPS 台架。
 - 按已审查台架接线方式连接的 comma 和 Panda。
 - 车辆/EPS/comma 完整断电后能够重新建立的 SSH 连接。
 - openpilot Python `3.12.3` 或更高版本，但必须低于 `3.13`。
@@ -788,7 +788,7 @@ RequestDownload 是 4 KiB，因为主机下载的是可执行 payload，不是�
 
 已审查的 target 改动是 `0x88000` 扇区内的单个控制流字节。位于 `0x8E6C4` 的 4 字节对齐指令字，原厂固件是 `0xD1E0301D`，patch 后是 `0x01E0301D`：只有字节 `0x8E6C7` 从 `0xD1` 变成 `0x01`。该字节是 16 位指令 `cmp r0, r26` 的低字节；改成 `cmp r0, r0` 后恒为相等，永久中和了其后的条件分支，这就是已审查的控制流旁路。
 
-由于 boot integrity 覆盖该变化，`0xFFDEC` 处 CRC 扇区调整字也必须改变。已审查固件上 patch 后的 prefix CRC 为 `0xBE36F00D`，candidate 调整字为 `0x41C90FF2`，使完整 Code Flash 范围 CRC residue 保持 `0xFFFFFFFF`。因此完整 patch 同时需要 `0x88000` 与 `0xF8000`，而不是只改一个指令字节。
+由于 boot integrity 覆盖该变化，`0xFFDEC` 处 CRC 扇区调整字也必须改变。已审查固件上 patch 后的 prefix CRC 为 `0x22A0EB88`，candidate 调整字为 `0xDD5F1477`，使完整 Code Flash 范围 CRC residue 保持 `0xFFFFFFFF`。因此完整 patch 同时需要 `0x88000` 与 `0xF8000`，而不是只改一个指令字节。
 
 `eps_patch/manifest.py` 中当前的 `original_sha256` 与 `patched_sha256` 就是已审查 target 扇区在这单个字节改动前后的摘要。该点位、调整字和扇区摘要都来自真实台架车辆，并通过完整的 `probe → patch → verify` 端到端验证。
 
