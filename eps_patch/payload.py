@@ -25,24 +25,24 @@ AUTHENTICATOR_OFFSET = 0xFF0
 SHELLCODE_LIMIT = JUMP_ADDRESS_OFFSET
 PLAINTEXT_BODY_LENGTH = AUTHENTICATOR_OFFSET
 PROBE_PE_CYCLE_ENVELOPE_SHA256 = (
-  "ea95db5e7a8c623220f5a164d74aab83dc1c8ba51d83681c7966a51da7aed705"
+  "7215c35e2bc6491abcd1e0ef6149c7ed1686fadc9261270747550ee89a7df87e"
 )
 BUILT_PAYLOADS = {
   "probe_pe_cycle": {
     "size": 2940,
-    "sha256": "d869833ab09a3d48a23aff22f7ce1746ab43b2909d6331e4bd3344fb483430ff",
+    "sha256": "68b8d1a4e9061312d8c5042bc720edf62d4351304f42423ab2f3397c78dc35a5",
   },
   "crc_probe": {
     "size": 2228,
-    "sha256": "8976ad8024bffa0e8b007a61727ec325319ec4dd1016905dc318133e1edda628",
+    "sha256": "d4234cbdcc06ddddc05a4c903550397c46d967a6571412503a0743f48710d221",
   },
   "crc_verify": {
     "size": 1894,
-    "sha256": "5594a6d505b37824d1bed056efdd74cc0542b67851e4fbc9755284350938f34a",
+    "sha256": "857ea5890249c0da726b7d6171259b0dbcb901063f6ccdaa1885c7f7ea29bf8b",
   },
   "crc_intermediate": {
     "size": 2356,
-    "sha256": "502ceb25f563f1e187bf4d328587a360360d610fb3a428f7037ba056bd589f30",
+    "sha256": "0ceec83abe82b7701a0b34ec2dc58c9bccff7d504b87489c48ff8d438aa9d2c6",
   },
   "write_target_candidate": {
     "size": 4040,
