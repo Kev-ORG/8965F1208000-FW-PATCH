@@ -7,7 +7,7 @@
     "crc_verify.c": "b15ed9901e7f85126403173cd3aa1f0346d19e236053d793dc41e7305efced2a",
     "write_target_candidate.c": "78fc48019d003b65dd67d5549db954318ef193744eb13c4d3fe954cba3a8ee8e",
     "write_crc_candidate.c": "206302f2ed29c904e8204bab28918784652388fac2910571d4ad3841ed39a15b",
-    "restore_sector.c": "cb4d69316815af4f48165b6f568ae96f1b5b0115fbba60a5aeb901f290fba469",
+    "restore_sector.c": "e5c9aa76fc799bdb0e4373eee352d83803b65e928cd19ef0ee6f4716b04bacdb",
     "live_read.c": "d3101df884d9490bb36951cd2f9b673d5f1d21cbac2ed6ac00e0464d16a4dd94",
     "common.h": "f67432d9357ae4ae4e3c1a4c5e06c38d9415bf12e0edf37d20603b16c58e6f94",
     "protocol.h": "39ba2f7ac68510f8e3ab8b81f9885f40d73bab511a0d34d582d90cc1a23028f0",
@@ -15,7 +15,7 @@
     "patch_common.h": "190074c3098699477a4c3aa84d835a6bce9b66e5c6acb8d4a5408ed63a66939c",
     "patch_protocol.h": "e15cfa3b8a619d5af62b7f9c313619ec872df8ae19dd582f8d6286bd23451379",
     "crc_runtime.h": "69c8c014207fb804c1afbdd4b151c699798b2769a98518bd905487f89f97a977",
-    "candidate_writer.h": "c3f344e65b8f480e29b58eceeea41d2bc98e9a2e989f655b479e51ced2d75985",
+    "candidate_writer.h": "20067f35f84e070fce7d56442edb6e439964d6f97caa419083a91ee52f5444e3",
     "faci_dual.h": "5844bf016c17ca8af712b313d7666e1ece01315bc0860ff5f2a133aba5c69b44",
     "linker.ld": "4d0cd4ea92814d765a67c24eac46c32e18f3cb2d3b3090ea51ba870698e61a9a",
     "linker_intent.ld": "1e32cfacbf711bc70bf85cc4f92cd2eb5aa16f3bd0d755b15b7ff058fc73ca52",
@@ -26,9 +26,9 @@
     "crc_probe": {"size": 2228, "sha256": "d4234cbdcc06ddddc05a4c903550397c46d967a6571412503a0743f48710d221"},
     "crc_intermediate": {"size": 2356, "sha256": "0ceec83abe82b7701a0b34ec2dc58c9bccff7d504b87489c48ff8d438aa9d2c6"},
     "crc_verify": {"size": 1894, "sha256": "857ea5890249c0da726b7d6171259b0dbcb901063f6ccdaa1885c7f7ea29bf8b"},
-    "write_target_candidate": {"size": 4040, "sha256": "8b9729f7104461a861785f3bf5446ac595a75e0dc17e4fd7001ff6470cb8852b"},
-    "write_crc_candidate": {"size": 4032, "sha256": "8df064bc4f2bb66a4c197b9fba96b830e925bf2b868d40451b9bf239e1f0870d"},
-    "restore_sector": {"size": 3956, "sha256": "f4fd6fb5aee9e4483799defa92bfef7c9eed2c1441ea7835f59ab9446d924f7d"},
+    "write_target_candidate": {"size": 4040, "sha256": "a69ed330dbc74a5ef369c062973637e95f3db2ad61a0d5fbce089a87ec2a4487"},
+    "write_crc_candidate": {"size": 4032, "sha256": "d04c4123d18a427b7881e4d3b23f27b9bc4e66f6c3dcf06ca563b41982c858ba"},
+    "restore_sector": {"size": 3956, "sha256": "44b0110973c50714ec774249a502813824778168ff7264f65c60d8fafa8c9f85"},
     "live_read": {"size": 1286, "sha256": "8adccbc840f292db8b3294d2c9e8118680d60b774e50e2a95da00f4bd57ca179"}
   }
 }

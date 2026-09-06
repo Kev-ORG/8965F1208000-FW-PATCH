@@ -46,15 +46,15 @@ BUILT_PAYLOADS = {
   },
   "write_target_candidate": {
     "size": 4040,
-    "sha256": "8b9729f7104461a861785f3bf5446ac595a75e0dc17e4fd7001ff6470cb8852b",
+    "sha256": "a69ed330dbc74a5ef369c062973637e95f3db2ad61a0d5fbce089a87ec2a4487",
   },
   "write_crc_candidate": {
     "size": 4032,
-    "sha256": "8df064bc4f2bb66a4c197b9fba96b830e925bf2b868d40451b9bf239e1f0870d",
+    "sha256": "d04c4123d18a427b7881e4d3b23f27b9bc4e66f6c3dcf06ca563b41982c858ba",
   },
   "restore_sector": {
     "size": 3956,
-    "sha256": "f4fd6fb5aee9e4483799defa92bfef7c9eed2c1441ea7835f59ab9446d924f7d",
+    "sha256": "44b0110973c50714ec774249a502813824778168ff7264f65c60d8fafa8c9f85",
   },
   "live_read": {
     "size": 1286,
@@ -140,23 +140,23 @@ REVIEWED_TEMPLATE_MANIFESTS = MappingProxyType({
   "restore_sector": PayloadTemplateManifest(
     name="restore_sector",
     size=3956,
-    sha256="f4fd6fb5aee9e4483799defa92bfef7c9eed2c1441ea7835f59ab9446d924f7d",
+    sha256="44b0110973c50714ec774249a502813824778168ff7264f65c60d8fafa8c9f85",
     intent=IntentLayout(offset=0x600, size=0x80),
-    review_sha256="f4fd6fb5aee9e4483799defa92bfef7c9eed2c1441ea7835f59ab9446d924f7d",
+    review_sha256="44b0110973c50714ec774249a502813824778168ff7264f65c60d8fafa8c9f85",
   ),
   "write_target_candidate": PayloadTemplateManifest(
     name="write_target_candidate",
     size=4040,
-    sha256="8b9729f7104461a861785f3bf5446ac595a75e0dc17e4fd7001ff6470cb8852b",
+    sha256="a69ed330dbc74a5ef369c062973637e95f3db2ad61a0d5fbce089a87ec2a4487",
     intent=IntentLayout(offset=0x600, size=0x80),
-    review_sha256="8b9729f7104461a861785f3bf5446ac595a75e0dc17e4fd7001ff6470cb8852b",
+    review_sha256="a69ed330dbc74a5ef369c062973637e95f3db2ad61a0d5fbce089a87ec2a4487",
   ),
   "write_crc_candidate": PayloadTemplateManifest(
     name="write_crc_candidate",
     size=4032,
-    sha256="8df064bc4f2bb66a4c197b9fba96b830e925bf2b868d40451b9bf239e1f0870d",
+    sha256="d04c4123d18a427b7881e4d3b23f27b9bc4e66f6c3dcf06ca563b41982c858ba",
     intent=IntentLayout(offset=0x600, size=0x80),
-    review_sha256="8df064bc4f2bb66a4c197b9fba96b830e925bf2b868d40451b9bf239e1f0870d",
+    review_sha256="d04c4123d18a427b7881e4d3b23f27b9bc4e66f6c3dcf06ca563b41982c858ba",
   ),
 })
 

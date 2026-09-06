@@ -14,7 +14,7 @@ from eps_patch.paths import ArtifactLayout
 
 
 REVIEWED_PROBE_ENVELOPE_SHA256 = (
-  "ea95db5e7a8c623220f5a164d74aab83dc1c8ba51d83681c7966a51da7aed705"
+  "7215c35e2bc6491abcd1e0ef6149c7ed1686fadc9261270747550ee89a7df87e"
 )
 SNAPSHOTS = {
   "PRE": {
